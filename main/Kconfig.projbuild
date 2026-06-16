@@ -1,0 +1,42 @@
+menu "Light Ring WLED"
+
+config LIGHT_RING_LED_GPIO
+    int "Light ring data GPIO"
+    range 0 48
+    default 16
+    help
+        GPIO used for the WS2812-compatible light ring data signal.
+
+config LIGHT_RING_LED_COUNT
+    int "Light ring LED count"
+    range 1 512
+    default 27
+    help
+        Number of addressable LEDs on the ring.
+
+config LIGHT_RING_DEFAULT_BRIGHTNESS
+    int "Default brightness"
+    range 1 255
+    default 160
+    help
+        Initial global brightness after boot.
+
+config LIGHT_RING_AP_PASSWORD
+    string "Fallback AP password"
+    default "wleds3r8"
+    help
+        Password for the fallback Wi-Fi AP. Use at least 8 characters.
+
+config LIGHT_RING_STA_SSID
+    string "Optional station SSID"
+    default ""
+    help
+        If set, the device also joins this Wi-Fi network in AP+STA mode.
+
+config LIGHT_RING_STA_PASSWORD
+    string "Optional station password"
+    default ""
+    help
+        Password for the optional station Wi-Fi network.
+
+endmenu
