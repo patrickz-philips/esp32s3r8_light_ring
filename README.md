@@ -21,9 +21,13 @@ It is structured like the local `lvgl_ppt` project, but the runtime is focused o
   - `GET /json/info`
   - `GET /json/state`
   - `POST /json/state`
+  - `GET /json/palettes`
+  - `POST /json/palettes`
   - `GET /win?T=1&A=160&R=255&G=80&B=0&FX=2&SX=128&FP=4`
 - Built-in effects: solid, breathe, rainbow, chase, color_wipe, twinkle, scanner, sparkle
 - WLED-style palette selection via JSON `pal` / `palette` and legacy `FP` query parameter
+- Built-in palette gallery plus 8 custom palette slots with NVS persistence
+- Visual custom palette editor in the embedded web UI, including new custom palette creation and custom naming
 - OTA-ready partition table
 
 ## Configuration
@@ -64,7 +68,21 @@ Built-in palette IDs:
 - `8`: Ice
 - `9`: Rainbow
 
+Custom palette IDs:
+
+- `10`: Custom 1
+- `11`: Custom 2
+- `12`: Custom 3
+- `13`: Custom 4
+- `14`: Custom 5
+- `15`: Custom 6
+- `16`: Custom 7
+- `17`: Custom 8
+
 When `pal` / `palette` is `0`, the current primary color (`color` or `seg[0].col[0]`) is used instead of a built-in palette.
+
+The embedded web UI now exposes a palette gallery and a custom editor. Built-in palettes are read-only. Custom palettes are stored as up to 8 WLED-style color stops in flash and restored on boot.
+Unused custom slots stay hidden from the active palette picker until you create one with `New Custom Palette`.
 
 Simple example:
 
@@ -95,6 +113,31 @@ WLED-style example:
   ]
 }
 ```
+
+Custom palette example:
+
+`POST /json/palettes` accepts `id`, optional `name`, and a palette definition in `stops`, `palette`, or `colors`.
+Each stop can be either `[index, r, g, b]` or `[index, "#RRGGBB"]`.
+
+```json
+{
+  "id": 10,
+  "name": "Aurora",
+  "stops": [
+    [0, 8, 16, 40],
+    [96, 0, 180, 120],
+    [180, 120, 255, 80],
+    [255, "#fff2c0"]
+  ]
+}
+```
+
+`GET /json/palettes` returns a WLED-inspired palette catalog with:
+
+- `items`: palette cards for the UI, including `editable`, `colors`, and custom `stops`
+- `selected`: currently active palette id
+- `customStart` / `customCount`: custom palette slot range
+- `p`: palette map keyed by palette id
 
 ## Scope
 

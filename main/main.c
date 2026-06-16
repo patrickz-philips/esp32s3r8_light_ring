@@ -18,17 +18,24 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 
 #include "led_strip_encoder.h"
 
 #define LED_STRIP_RESOLUTION_HZ     10000000U
 #define LED_STRIP_MEM_BLOCK_SYMBOLS 128U
-#define HTTP_RECV_BUFFER_SIZE       512
+#define HTTP_RECV_BUFFER_SIZE       2048
 #define AP_MAX_STA_CONNECTIONS      4
 #define PALETTE_ENTRY_COUNT         16U
 #define BUILTIN_PALETTE_COUNT       9U
-#define PALETTE_COUNT               (BUILTIN_PALETTE_COUNT + 1U)
+#define CUSTOM_PALETTE_SLOT_COUNT   8U
+#define CUSTOM_PALETTE_MAX_STOPS    8U
+#define PALETTE_NAME_LENGTH         24U
+#define CUSTOM_PALETTE_START_ID     (1U + BUILTIN_PALETTE_COUNT)
+#define PALETTE_COUNT               (CUSTOM_PALETTE_START_ID + CUSTOM_PALETTE_SLOT_COUNT)
+#define PALETTE_NVS_NAMESPACE       "palettes"
+#define PALETTE_NVS_KEY             "catalog"
 
 typedef enum {
     EFFECT_SOLID = 0,
@@ -48,6 +55,20 @@ typedef struct {
 } builtin_palette_t;
 
 typedef struct {
+    uint8_t index;
+    uint8_t red;
+    uint8_t green;
+    uint8_t blue;
+} palette_stop_t;
+
+typedef struct {
+    uint8_t stop_count;
+    char name[PALETTE_NAME_LENGTH];
+    palette_stop_t stops[CUSTOM_PALETTE_MAX_STOPS];
+    uint8_t colors[PALETTE_ENTRY_COUNT][3];
+} custom_palette_t;
+
+typedef struct {
     bool on;
     uint8_t brightness;
     uint8_t red;
@@ -56,6 +77,9 @@ typedef struct {
     uint8_t effect;
     uint8_t speed;
     uint8_t palette;
+    bool has_palette_cache;
+    char palette_label[PALETTE_NAME_LENGTH];
+    uint8_t palette_cache[PALETTE_ENTRY_COUNT][3];
 } light_state_t;
 
 static const char *TAG = "light_ring_wled";
@@ -69,6 +93,7 @@ static char s_device_name[32];
 static char s_ap_ssid[33];
 static char s_sta_ip[16];
 static bool s_sta_connected;
+static custom_palette_t s_custom_palettes[CUSTOM_PALETTE_SLOT_COUNT];
 
 // WLED-inspired fixed palettes sampled with a 16-entry blended lookup.
 static const builtin_palette_t s_builtin_palettes[BUILTIN_PALETTE_COUNT] = {
@@ -155,6 +180,53 @@ static const builtin_palette_t s_builtin_palettes[BUILTIN_PALETTE_COUNT] = {
     },
 };
 
+static const custom_palette_t s_default_custom_palettes[CUSTOM_PALETTE_SLOT_COUNT] = {
+    {
+        .stop_count = 5,
+        .name = "Cotton Candy",
+        .stops = {
+            {0, 48, 11, 94},
+            {64, 114, 9, 183},
+            {128, 255, 0, 110},
+            {192, 255, 190, 11},
+            {255, 255, 244, 214},
+        },
+    },
+    {
+        .stop_count = 5,
+        .name = "Aurora Mist",
+        .stops = {
+            {0, 0, 24, 64},
+            {64, 0, 104, 160},
+            {128, 0, 208, 160},
+            {192, 96, 255, 196},
+            {255, 236, 255, 248},
+        },
+    },
+    {
+        .stop_count = 5,
+        .name = "Ember Trail",
+        .stops = {
+            {0, 12, 4, 24},
+            {64, 96, 8, 32},
+            {128, 220, 44, 0},
+            {192, 255, 140, 0},
+            {255, 255, 236, 180},
+        },
+    },
+    {
+        .stop_count = 5,
+        .name = "Neon Mint",
+        .stops = {
+            {0, 4, 8, 32},
+            {64, 0, 72, 96},
+            {128, 0, 255, 170},
+            {192, 160, 255, 96},
+            {255, 250, 255, 224},
+        },
+    },
+};
+
 static light_state_t s_light_state = {
     .on = true,
     .brightness = CONFIG_LIGHT_RING_DEFAULT_BRIGHTNESS,
@@ -166,6 +238,136 @@ static light_state_t s_light_state = {
     .palette = 0,
 };
 
+static void sort_palette_stops(palette_stop_t *stops, size_t count)
+{
+    for (size_t index = 1; index < count; ++index) {
+        palette_stop_t current = stops[index];
+        size_t offset = index;
+        while (offset > 0U && stops[offset - 1U].index > current.index) {
+            stops[offset] = stops[offset - 1U];
+            --offset;
+        }
+        stops[offset] = current;
+    }
+}
+
+static void rebuild_custom_palette_colors(custom_palette_t *palette)
+{
+    if (palette->stop_count == 0U) {
+        memset(palette->colors, 0, sizeof(palette->colors));
+        return;
+    }
+
+    if (palette->stop_count > CUSTOM_PALETTE_MAX_STOPS) {
+        palette->stop_count = CUSTOM_PALETTE_MAX_STOPS;
+    }
+
+    sort_palette_stops(palette->stops, palette->stop_count);
+
+    for (size_t entry = 0; entry < PALETTE_ENTRY_COUNT; ++entry) {
+        uint16_t target = (entry == (PALETTE_ENTRY_COUNT - 1U)) ? 255U : (uint16_t) (entry << 4);
+        const palette_stop_t *left = &palette->stops[0];
+        const palette_stop_t *right = &palette->stops[palette->stop_count - 1U];
+
+        if (target <= left->index) {
+            palette->colors[entry][0] = left->red;
+            palette->colors[entry][1] = left->green;
+            palette->colors[entry][2] = left->blue;
+            continue;
+        }
+
+        if (target >= right->index) {
+            palette->colors[entry][0] = right->red;
+            palette->colors[entry][1] = right->green;
+            palette->colors[entry][2] = right->blue;
+            continue;
+        }
+
+        for (size_t stop = 1; stop < palette->stop_count; ++stop) {
+            right = &palette->stops[stop];
+            if (target > right->index) {
+                left = right;
+                continue;
+            }
+
+            uint16_t span = (uint16_t) (right->index - left->index);
+            if (span == 0U) {
+                palette->colors[entry][0] = right->red;
+                palette->colors[entry][1] = right->green;
+                palette->colors[entry][2] = right->blue;
+                break;
+            }
+
+            uint16_t progress = (uint16_t) ((target - left->index) * 255U / span);
+            uint16_t remain = 255U - progress;
+
+            palette->colors[entry][0] = (uint8_t) ((((uint16_t) left->red * remain) + ((uint16_t) right->red * progress)) / 255U);
+            palette->colors[entry][1] = (uint8_t) ((((uint16_t) left->green * remain) + ((uint16_t) right->green * progress)) / 255U);
+            palette->colors[entry][2] = (uint8_t) ((((uint16_t) left->blue * remain) + ((uint16_t) right->blue * progress)) / 255U);
+            break;
+        }
+    }
+}
+
+static void load_default_custom_palettes(void)
+{
+    memcpy(s_custom_palettes, s_default_custom_palettes, sizeof(s_custom_palettes));
+    for (size_t index = 0; index < CUSTOM_PALETTE_SLOT_COUNT; ++index) {
+        rebuild_custom_palette_colors(&s_custom_palettes[index]);
+    }
+}
+
+static esp_err_t load_custom_palettes_from_nvs(void)
+{
+    load_default_custom_palettes();
+
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(PALETTE_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (ret == ESP_ERR_NVS_NOT_FOUND) {
+        return ESP_OK;
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "open palette namespace failed");
+
+    size_t size = sizeof(s_custom_palettes);
+    ret = nvs_get_blob(handle, PALETTE_NVS_KEY, s_custom_palettes, &size);
+    nvs_close(handle);
+
+    if (ret == ESP_ERR_NVS_NOT_FOUND) {
+        load_default_custom_palettes();
+        return ESP_OK;
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "read custom palettes failed");
+
+    if (size > sizeof(s_custom_palettes) || (size % sizeof(custom_palette_t)) != 0U) {
+        ESP_LOGW(TAG, "Ignoring stored palettes with unexpected size %u", (unsigned) size);
+        load_default_custom_palettes();
+        return ESP_OK;
+    }
+
+    for (size_t index = 0; index < CUSTOM_PALETTE_SLOT_COUNT; ++index) {
+        if (s_custom_palettes[index].name[0] == '\0') {
+            strlcpy(s_custom_palettes[index].name, s_default_custom_palettes[index].name, sizeof(s_custom_palettes[index].name));
+        }
+        rebuild_custom_palette_colors(&s_custom_palettes[index]);
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t save_custom_palettes_to_nvs(void)
+{
+    nvs_handle_t handle;
+    ESP_RETURN_ON_ERROR(nvs_open(PALETTE_NVS_NAMESPACE, NVS_READWRITE, &handle), TAG, "open palette namespace failed");
+
+    esp_err_t ret = nvs_set_blob(handle, PALETTE_NVS_KEY, s_custom_palettes, sizeof(s_custom_palettes));
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+    return ret;
+}
+
 static const char INDEX_HTML[] =
     "<!doctype html>\n"
     "<html lang=\"en\">\n"
@@ -174,67 +376,113 @@ static const char INDEX_HTML[] =
     "  <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
     "  <title>Light Ring Control</title>\n"
     "  <style>\n"
-    "    :root { color-scheme: light; --bg:#f3efe7; --card:#fffaf2; --ink:#1c1a17; --accent:#ff6a3d; --accent-2:#0f7c86; --line:#d9c9b4; }\n"
+    "    :root { color-scheme: light; --bg:#f6efe3; --card:rgba(255,250,243,0.88); --ink:#1f1b16; --accent:#d95f39; --accent-2:#0d7b77; --line:#dcc8b0; --muted:#6f6355; }\n"
     "    * { box-sizing:border-box; }\n"
-    "    body { margin:0; font-family:'Segoe UI',sans-serif; background:radial-gradient(circle at top,#fffaf2, #f1e6d6 55%, #e4d2bb); color:var(--ink); }\n"
-    "    main { max-width:720px; margin:0 auto; padding:32px 20px 48px; }\n"
-    "    .card { background:rgba(255,250,242,0.9); backdrop-filter:blur(12px); border:1px solid var(--line); border-radius:24px; padding:24px; box-shadow:0 18px 50px rgba(70,40,20,0.12); }\n"
+    "    body { margin:0; font-family:'Segoe UI',sans-serif; background:radial-gradient(circle at top,#fffaf4, #f2e4d1 52%, #dfc9aa); color:var(--ink); }\n"
+    "    main { max-width:1120px; margin:0 auto; padding:28px 18px 44px; }\n"
+    "    .page { display:grid; gap:20px; grid-template-columns:minmax(0, 1.2fr) minmax(320px, 0.8fr); align-items:start; }\n"
+    "    .stack { display:grid; gap:16px; }\n"
+    "    .card { background:var(--card); backdrop-filter:blur(14px); border:1px solid var(--line); border-radius:24px; padding:24px; box-shadow:0 18px 50px rgba(70,40,20,0.12); }\n"
     "    h1 { margin:0 0 10px; font-size:clamp(28px,5vw,44px); }\n"
+    "    h2 { margin:0 0 10px; font-size:20px; }\n"
     "    p { line-height:1.5; }\n"
-    "    .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); margin-top:20px; }\n"
     "    label { display:block; font-size:14px; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.08em; }\n"
     "    input, select, button { width:100%; border-radius:14px; border:1px solid var(--line); padding:12px 14px; font-size:16px; }\n"
     "    input[type=range] { padding:0; }\n"
-    "    button { background:linear-gradient(135deg,var(--accent),#ff9754); color:white; border:none; font-weight:600; cursor:pointer; }\n"
+    "    input[type=color] { min-height:52px; padding:6px; }\n"
+    "    button { background:linear-gradient(135deg,var(--accent),#f08b54); color:white; border:none; font-weight:600; cursor:pointer; }\n"
     "    button.secondary { background:linear-gradient(135deg,var(--accent-2),#35a6a2); }\n"
+    "    button.ghost { background:white; color:var(--ink); border:1px solid var(--line); }\n"
+    "    button:disabled { opacity:0.55; cursor:not-allowed; }\n"
     "    .row { display:flex; gap:12px; align-items:center; }\n"
     "    .row > * { flex:1; }\n"
+    "    .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); margin-top:20px; }\n"
     "    .pill { display:inline-flex; align-items:center; gap:8px; margin-top:12px; padding:8px 12px; border-radius:999px; background:#fff; border:1px solid var(--line); font-size:14px; }\n"
     "    code { background:#fff; padding:2px 6px; border-radius:8px; }\n"
+    "    .note { margin:0; color:var(--muted); font-size:14px; }\n"
+    "    .palette-grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }\n"
+    "    .palette-card { position:relative; width:100%; padding:0; overflow:hidden; text-align:left; background:#fff; color:var(--ink); border:1px solid var(--line); border-radius:18px; transition:transform .18s ease, box-shadow .18s ease, border-color .18s ease; }\n"
+    "    .palette-card:hover { transform:translateY(-2px); box-shadow:0 10px 24px rgba(40,24,12,0.12); }\n"
+    "    .palette-card.active { border-color:var(--accent); box-shadow:0 0 0 2px rgba(217,95,57,0.18); }\n"
+    "    .palette-card.editable::after { content:'Custom'; position:absolute; top:10px; right:10px; padding:4px 8px; border-radius:999px; background:rgba(255,255,255,0.92); color:var(--ink); font-size:11px; }\n"
+    "    .palette-preview { min-height:68px; display:grid; grid-template-columns:repeat(16,1fr); overflow:hidden; border-radius:16px; }\n"
+    "    .palette-preview > div { min-height:68px; }\n"
+    "    .palette-meta { padding:12px 14px 14px; }\n"
+    "    .palette-meta strong { display:block; font-size:15px; }\n"
+    "    .palette-meta span { color:var(--muted); font-size:13px; }\n"
+    "    .editor-shell { display:grid; gap:16px; }\n"
+    "    .editor-header { display:flex; gap:12px; align-items:center; justify-content:space-between; }\n"
+    "    .editor-header > * { flex:1; }\n"
+    "    .actions { display:flex; gap:10px; justify-content:flex-end; }\n"
+    "    .actions button, .toolbar button { width:auto; }\n"
+    "    .toolbar { display:flex; gap:10px; flex-wrap:wrap; }\n"
+    "    .stop-list { display:grid; gap:10px; }\n"
+    "    .stop-row { display:grid; gap:10px; grid-template-columns:88px minmax(0,1fr) auto; align-items:end; padding:12px; border:1px solid var(--line); border-radius:16px; background:rgba(255,255,255,0.76); }\n"
+    "    .mini-label { font-size:12px; color:var(--muted); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.08em; }\n"
+    "    .color-fields { display:grid; gap:10px; grid-template-columns:120px repeat(3, minmax(0,1fr)); align-items:end; }\n"
+    "    .color-fields input[type=number] { min-width:0; }\n"
+    "    .stop-row button { width:auto; }\n"
+    "    @media (max-width: 880px) { .page { grid-template-columns:1fr; } .actions { justify-content:flex-start; } }\n"
+    "    @media (max-width: 640px) { .stop-row { grid-template-columns:1fr; } .color-fields { grid-template-columns:1fr 1fr; } }\n"
     "  </style>\n"
     "</head>\n"
     "<body>\n"
     "  <main>\n"
-    "    <div class=\"card\">\n"
-    "      <h1>ESP32-S3R8 Light Ring</h1>\n"
-    "      <p>WLED-style ESP-IDF starter for a 27-pixel ring on GPIO16.</p>\n"
-    "      <div class=\"row\">\n"
-    "        <button id=\"toggleBtn\">Toggle Power</button>\n"
-    "        <div class=\"pill\"><span>Status</span><strong id=\"powerLabel\">Unknown</strong></div>\n"
+    "    <div class=\"page\">\n"
+    "      <div class=\"stack\">\n"
+    "        <div class=\"card\">\n"
+    "          <h1>ESP32-S3R8 Light Ring</h1>\n"
+    "          <p>WLED-style ESP-IDF control surface with built-in and custom palettes for a 27-pixel ring on GPIO16.</p>\n"
+    "          <div class=\"row\">\n"
+    "            <button id=\"toggleBtn\">Toggle Power</button>\n"
+    "            <div class=\"pill\"><span>Status</span><strong id=\"powerLabel\">Unknown</strong></div>\n"
+    "          </div>\n"
+    "          <div class=\"grid\">\n"
+    "            <div><label for=\"color\">Primary Color</label><input id=\"color\" type=\"color\" value=\"#ff7810\"></div>\n"
+    "            <div><label for=\"brightness\">Brightness</label><input id=\"brightness\" type=\"range\" min=\"0\" max=\"255\" value=\"160\"></div>\n"
+    "            <div><label for=\"effect\">Effect</label><select id=\"effect\"><option value=\"0\">Solid</option><option value=\"1\">Breathe</option><option value=\"2\">Rainbow</option><option value=\"3\">Chase</option><option value=\"4\">Color Wipe</option><option value=\"5\">Twinkle</option><option value=\"6\">Scanner</option><option value=\"7\">Sparkle</option></select></div>\n"
+    "            <div><label for=\"palette\">Palette</label><select id=\"palette\"></select></div>\n"
+    "            <div><label for=\"speed\">Speed</label><input id=\"speed\" type=\"range\" min=\"1\" max=\"255\" value=\"128\"></div>\n"
+    "          </div>\n"
+    "          <div class=\"grid\">\n"
+    "            <button id=\"applyBtn\">Apply State</button>\n"
+    "            <button id=\"refreshBtn\" class=\"secondary\">Refresh State</button>\n"
+    "          </div>\n"
+    "          <p id=\"deviceInfo\" class=\"pill\">Loading device info...</p>\n"
+    "          <p>API: <code>/json/state</code>, <code>/json/info</code>, <code>/json/palettes</code>, <code>/win</code></p>\n"
+    "        </div>\n"
+    "        <div class=\"card\">\n"
+    "          <div class=\"editor-header\">\n"
+    "            <div>\n"
+    "              <h2>Palette Gallery</h2>\n"
+    "              <p class=\"note\">Built-ins are read-only. Four custom slots can be edited and saved to flash.</p>\n"
+    "            </div>\n"
+    "            <div class=\"actions\">\n"
+    "              <button id=\"newPaletteBtn\" type=\"button\">New Custom Palette</button>\n"
+    "              <button id=\"reloadPalettesBtn\" class=\"ghost\" type=\"button\">Reload</button>\n"
+    "            </div>\n"
+    "          </div>\n"
+    "          <div id=\"paletteGallery\" class=\"palette-grid\"></div>\n"
+    "        </div>\n"
     "      </div>\n"
-    "      <div class=\"grid\">\n"
-    "        <div><label for=\"color\">Primary Color</label><input id=\"color\" type=\"color\" value=\"#ff7810\"></div>\n"
-    "        <div><label for=\"brightness\">Brightness</label><input id=\"brightness\" type=\"range\" min=\"0\" max=\"255\" value=\"160\"></div>\n"
-    "        <div><label for=\"effect\">Effect</label><select id=\"effect\">"
-    "<option value=\"0\">Solid</option>"
-    "<option value=\"1\">Breathe</option>"
-    "<option value=\"2\">Rainbow</option>"
-    "<option value=\"3\">Chase</option>"
-    "<option value=\"4\">Color Wipe</option>"
-    "<option value=\"5\">Twinkle</option>"
-    "<option value=\"6\">Scanner</option>"
-    "<option value=\"7\">Sparkle</option>"
-    "</select></div>\n"
-    "        <div><label for=\"palette\">Palette</label><select id=\"palette\">"
-    "<option value=\"0\">Primary</option>"
-    "<option value=\"1\">Party</option>"
-    "<option value=\"2\">Cloud</option>"
-    "<option value=\"3\">Lava</option>"
-    "<option value=\"4\">Ocean</option>"
-    "<option value=\"5\">Forest</option>"
-    "<option value=\"6\">Sunset</option>"
-    "<option value=\"7\">Fire</option>"
-    "<option value=\"8\">Ice</option>"
-    "<option value=\"9\">Rainbow</option>"
-    "</select></div>\n"
-    "        <div><label for=\"speed\">Speed</label><input id=\"speed\" type=\"range\" min=\"1\" max=\"255\" value=\"128\"></div>\n"
+    "      <div class=\"stack\">\n"
+    "        <div class=\"card\">\n"
+    "          <h2>Custom Palette Editor</h2>\n"
+    "          <p id=\"editorHint\" class=\"note\">Select a custom palette card to edit its color stops.</p>\n"
+    "          <div class=\"editor-shell\">\n"
+    "            <div>\n"
+    "              <label for=\"customPaletteName\">Palette Name</label>\n"
+    "              <input id=\"customPaletteName\" type=\"text\" maxlength=\"23\" placeholder=\"Custom palette name\">\n"
+    "            </div>\n"
+    "            <div id=\"editorPreview\" class=\"palette-preview\"></div>\n"
+    "            <div class=\"toolbar\">\n"
+    "              <button id=\"addStopBtn\" class=\"ghost\" type=\"button\">Add Stop</button>\n"
+    "              <button id=\"savePaletteBtn\" type=\"button\">Save Palette</button>\n"
+    "            </div>\n"
+    "            <div id=\"stopList\" class=\"stop-list\"></div>\n"
+    "          </div>\n"
+    "        </div>\n"
     "      </div>\n"
-    "      <div class=\"grid\">\n"
-    "        <button id=\"applyBtn\">Apply State</button>\n"
-    "        <button id=\"refreshBtn\" class=\"secondary\">Refresh State</button>\n"
-    "      </div>\n"
-    "      <p id=\"deviceInfo\" class=\"pill\">Loading device info...</p>\n"
-    "      <p>API: <code>/json/state</code>, <code>/json/info</code>, <code>/win</code></p>\n"
     "    </div>\n"
     "  </main>\n"
     "  <script>\n"
@@ -245,16 +493,48 @@ static const char INDEX_HTML[] =
     "    const paletteInput = document.getElementById('palette');\n"
     "    const powerLabel = document.getElementById('powerLabel');\n"
     "    const deviceInfo = document.getElementById('deviceInfo');\n"
+    "    const paletteGallery = document.getElementById('paletteGallery');\n"
+    "    const editorHint = document.getElementById('editorHint');\n"
+    "    const customPaletteName = document.getElementById('customPaletteName');\n"
+    "    const stopList = document.getElementById('stopList');\n"
+    "    const editorPreview = document.getElementById('editorPreview');\n"
+    "    const addStopBtn = document.getElementById('addStopBtn');\n"
+    "    const savePaletteBtn = document.getElementById('savePaletteBtn');\n"
+    "    const newPaletteBtn = document.getElementById('newPaletteBtn');\n"
+    "    const reloadPalettesBtn = document.getElementById('reloadPalettesBtn');\n"
     "    let lastOn = true;\n"
+    "    let paletteCatalog = [];\n"
+    "    let selectedPaletteId = 0;\n"
+    "    let editingPaletteId = null;\n"
+    "    let editingStops = [];\n"
     "    function rgbToHex(rgb) { return '#' + rgb.map(v => Number(v).toString(16).padStart(2, '0')).join(''); }\n"
     "    function hexToRgb(hex) { const value = hex.replace('#', ''); return [parseInt(value.slice(0,2),16), parseInt(value.slice(2,4),16), parseInt(value.slice(4,6),16)]; }\n"
+    "    function normalizeStops(stops) { return (Array.isArray(stops) ? stops : []).map(stop => ({ index: Number(stop[0] ?? stop.index ?? 0), rgb: Array.isArray(stop) ? [Number(stop[1] ?? 0), Number(stop[2] ?? 0), Number(stop[3] ?? 0)] : [Number(stop.red ?? 0), Number(stop.green ?? 0), Number(stop.blue ?? 0)] })).sort((a, b) => a.index - b.index); }\n"
+    "    function seedPaletteStops() { return [{ index: 0, rgb: hexToRgb(colorInput ? colorInput.value : '#ff7810') }, { index: 255, rgb: [255, 255, 255] }]; }\n"
+    "    function nextEmptyCustomPalette() { return paletteCatalog.find(item => item.editable && item.empty); }\n"
+    "    function renderPreview(target, colors) { if (!target) return; target.innerHTML = ''; (colors || []).forEach(entry => { const swatch = document.createElement('div'); const rgb = Array.isArray(entry) ? entry.slice(1,4) : entry.rgb; swatch.style.background = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`; target.appendChild(swatch); }); }\n"
+    "    function renderPaletteSelect() { if (!paletteInput) return; const current = String(selectedPaletteId); paletteInput.innerHTML = paletteCatalog.filter(item => !item.empty).map(item => `<option value=\"${item.id}\">${item.name}</option>`).join(''); if ([...paletteInput.options].some(option => option.value === current)) paletteInput.value = current; }\n"
+    "    function activatePaletteCard(id) { if (!paletteGallery) return; [...paletteGallery.children].forEach(card => card.classList.toggle('active', Number(card.dataset.id) === Number(id))); }\n"
+    "    function renderStopEditor() { if (!stopList || !editorPreview || !editorHint || !customPaletteName) return; stopList.innerHTML = ''; const current = paletteCatalog.find(item => Number(item.id) === Number(editingPaletteId)); if (!current) { editorHint.textContent = 'Select a custom palette card or create a new one.'; customPaletteName.value = ''; renderPreview(editorPreview, []); return; } editorHint.textContent = current.empty ? `Creating ${current.name}. Give it a name and tune its color stops.` : `Editing custom palette ${current.name}. Stops are saved as WLED-style [index,r,g,b] entries.`; if (!current.empty && customPaletteName.value === '') customPaletteName.value = current.name; const previewColors = editingStops.map(stop => [stop.index, ...stop.rgb]); renderPreview(editorPreview, previewColors.length ? previewColors : ((current.stops && current.stops.length) ? current.stops : (current.colors || []))); editingStops.forEach((stop, index) => { const row = document.createElement('div'); row.className = 'stop-row'; row.innerHTML = `<div><div class=\"mini-label\">Index</div><input type=\"number\" min=\"0\" max=\"255\" value=\"${stop.index}\" data-role=\"index\" data-index=\"${index}\"></div><div><div class=\"mini-label\">Color</div><div class=\"color-fields\"><input type=\"color\" value=\"${rgbToHex(stop.rgb)}\" data-role=\"color\" data-index=\"${index}\"><div><div class=\"mini-label\">R</div><input type=\"number\" min=\"0\" max=\"255\" value=\"${stop.rgb[0]}\" data-role=\"red\" data-index=\"${index}\"></div><div><div class=\"mini-label\">G</div><input type=\"number\" min=\"0\" max=\"255\" value=\"${stop.rgb[1]}\" data-role=\"green\" data-index=\"${index}\"></div><div><div class=\"mini-label\">B</div><input type=\"number\" min=\"0\" max=\"255\" value=\"${stop.rgb[2]}\" data-role=\"blue\" data-index=\"${index}\"></div></div></div><button type=\"button\" class=\"ghost\" data-role=\"remove\" data-index=\"${index}\">Remove</button>`; stopList.appendChild(row); }); }\n"
+    "    function renderPaletteGallery() { if (!paletteGallery) return; paletteGallery.innerHTML = ''; paletteCatalog.filter(item => !item.empty).forEach(item => { const card = document.createElement('button'); card.type = 'button'; card.className = `palette-card${item.editable ? ' editable' : ''}${Number(item.id) === Number(selectedPaletteId) ? ' active' : ''}`; card.dataset.id = item.id; const preview = document.createElement('div'); preview.className = 'palette-preview'; (item.colors || []).forEach(entry => { const swatch = document.createElement('div'); const rgb = Array.isArray(entry) ? entry.slice(1,4) : entry.rgb; swatch.style.background = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`; preview.appendChild(swatch); }); const meta = document.createElement('div'); meta.className = 'palette-meta'; meta.innerHTML = `<strong>${item.name}</strong><span>${item.editable ? 'Custom editable palette' : 'Built-in palette'}</span>`; card.append(preview, meta); card.addEventListener('click', () => { selectedPaletteId = Number(item.id); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); if (item.editable) { loadPaletteEditor(item.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } }); paletteGallery.appendChild(card); }); if (newPaletteBtn) { const next = nextEmptyCustomPalette(); newPaletteBtn.disabled = !next; newPaletteBtn.textContent = next ? 'New Custom Palette' : 'Custom Slots Full'; } }\n"
+    "    function loadPaletteEditor(id) { const item = paletteCatalog.find(entry => Number(entry.id) === Number(id)); if (!item || !item.editable) return; editingPaletteId = Number(id); customPaletteName.value = item.empty ? '' : item.name; editingStops = item.empty ? seedPaletteStops() : normalizeStops(item.stops && item.stops.length ? item.stops : item.colors).slice(0, 8); renderStopEditor(); }\n"
+    "    function startNewPalette() { const item = nextEmptyCustomPalette(); if (!item) { editorHint.textContent = 'All custom palette slots are already in use.'; return; } loadPaletteEditor(item.id); }\n"
     "    async function loadInfo() { const response = await fetch('/json/info'); const info = await response.json(); deviceInfo.textContent = `${info.name} | AP ${info.wifi.ap_ssid} | LEDs ${info.led.count} @ GPIO${info.led.gpio}`; }\n"
-    "    async function loadState() { const response = await fetch('/json/state'); const state = await response.json(); const seg = state.seg && state.seg[0] ? state.seg[0] : {}; const color = seg.col && seg.col[0] ? seg.col[0] : state.color; lastOn = !!state.on; powerLabel.textContent = lastOn ? 'ON' : 'OFF'; brightnessInput.value = state.bri ?? 0; speedInput.value = seg.sx ?? state.speed ?? 128; effectInput.value = seg.fx ?? state.fx ?? 0; paletteInput.value = seg.pal ?? state.pal ?? state.palette ?? 0; if (Array.isArray(color)) { colorInput.value = rgbToHex(color); } }\n"
+    "    async function loadPalettes() { const response = await fetch('/json/palettes'); const json = await response.json(); paletteCatalog = Array.isArray(json.items) ? json.items : []; renderPaletteSelect(); renderPaletteGallery(); if (editingPaletteId !== null) { loadPaletteEditor(editingPaletteId); } else { renderStopEditor(); } }\n"
+    "    async function loadState() { const response = await fetch('/json/state'); const state = await response.json(); const seg = state.seg && state.seg[0] ? state.seg[0] : {}; const color = seg.col && seg.col[0] ? seg.col[0] : state.color; lastOn = !!state.on; selectedPaletteId = Number(seg.pal ?? state.pal ?? state.palette ?? 0); powerLabel.textContent = lastOn ? 'ON' : 'OFF'; brightnessInput.value = state.bri ?? 0; speedInput.value = seg.sx ?? state.speed ?? 128; effectInput.value = seg.fx ?? state.fx ?? 0; if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { if (editingPaletteId !== selected.id) loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } if (Array.isArray(color)) { colorInput.value = rgbToHex(color); } }\n"
     "    async function applyState() { const [r, g, b] = hexToRgb(colorInput.value); const payload = { on: true, bri: Number(brightnessInput.value), color: [r, g, b], effect: Number(effectInput.value), speed: Number(speedInput.value), palette: Number(paletteInput.value) }; await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
+    "    async function savePalette() { if (editingPaletteId === null) { editorHint.textContent = 'Select a custom palette before saving.'; return; } if (!editingStops.length) { editorHint.textContent = 'Add at least one color stop before saving.'; return; } const payload = { id: Number(editingPaletteId), name: customPaletteName.value.trim() || 'Custom Palette', stops: editingStops.map(stop => [Number(stop.index), ...stop.rgb]) }; await fetch('/json/palettes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadPalettes(); await loadState(); loadPaletteEditor(editingPaletteId); }\n"
     "    document.getElementById('applyBtn').addEventListener('click', applyState);\n"
     "    document.getElementById('refreshBtn').addEventListener('click', loadState);\n"
     "    document.getElementById('toggleBtn').addEventListener('click', async () => { await fetch(`/win?T=${lastOn ? 0 : 1}`); await loadState(); });\n"
-    "    loadInfo().then(loadState).catch(error => { deviceInfo.textContent = error.message; });\n"
+    "    paletteInput.addEventListener('change', () => { selectedPaletteId = Number(paletteInput.value); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } });\n"
+    "    stopList.addEventListener('input', event => { const target = event.target; const index = Number(target.dataset.index); if (Number.isNaN(index) || !editingStops[index]) return; if (target.dataset.role === 'index') { editingStops[index].index = Math.max(0, Math.min(255, Number(target.value) || 0)); editingStops.sort((a, b) => a.index - b.index); renderStopEditor(); return; } if (target.dataset.role === 'color') { const rgb = hexToRgb(target.value); editingStops[index].rgb = rgb; const row = target.closest('.color-fields'); if (row) { const redInput = row.querySelector('[data-role=red]'); const greenInput = row.querySelector('[data-role=green]'); const blueInput = row.querySelector('[data-role=blue]'); if (redInput) redInput.value = String(rgb[0]); if (greenInput) greenInput.value = String(rgb[1]); if (blueInput) blueInput.value = String(rgb[2]); } renderPreview(editorPreview, editingStops.map(stop => [stop.index, ...stop.rgb])); return; } if (target.dataset.role === 'red' || target.dataset.role === 'green' || target.dataset.role === 'blue') { const channelMap = { red: 0, green: 1, blue: 2 }; const channel = channelMap[target.dataset.role]; editingStops[index].rgb[channel] = Math.max(0, Math.min(255, Number(target.value) || 0)); const row = target.closest('.color-fields'); const colorField = row ? row.querySelector('[data-role=color]') : null; if (colorField) colorField.value = rgbToHex(editingStops[index].rgb); renderPreview(editorPreview, editingStops.map(stop => [stop.index, ...stop.rgb])); } });\n"
+    "    stopList.addEventListener('click', event => { const target = event.target; if (target.dataset.role !== 'remove') return; const index = Number(target.dataset.index); if (!Number.isNaN(index)) { editingStops.splice(index, 1); renderStopEditor(); } });\n"
+    "    addStopBtn.addEventListener('click', () => { if (editingPaletteId === null) { editorHint.textContent = 'Select a custom palette first.'; return; } if (editingStops.length >= 8) return; editingStops.push({ index: editingStops.length ? Math.min(255, editingStops[editingStops.length - 1].index + 32) : 0, rgb: [255, 255, 255] }); renderStopEditor(); });\n"
+    "    savePaletteBtn.addEventListener('click', savePalette);\n"
+    "    newPaletteBtn.addEventListener('click', startNewPalette);\n"
+    "    reloadPalettesBtn.addEventListener('click', () => loadPalettes().then(loadState).catch(error => { deviceInfo.textContent = error.message; }));\n"
+    "    Promise.all([loadInfo(), loadPalettes()]).then(loadState).catch(error => { deviceInfo.textContent = error.message; });\n"
     "  </script>\n"
     "</body>\n"
     "</html>\n";
@@ -285,10 +565,32 @@ static const char *effect_name(effect_id_t effect)
 
 static const char *palette_name(uint8_t palette)
 {
-    if (palette == 0U || palette > BUILTIN_PALETTE_COUNT) {
+    if (palette == 0U) {
+        return "Primary";
+    }
+    if (palette >= CUSTOM_PALETTE_START_ID && palette < PALETTE_COUNT) {
+        return s_custom_palettes[palette - CUSTOM_PALETTE_START_ID].name[0] != '\0' ?
+            s_custom_palettes[palette - CUSTOM_PALETTE_START_ID].name : "Custom Palette";
+    }
+    if (palette > BUILTIN_PALETTE_COUNT) {
         return "Primary";
     }
     return s_builtin_palettes[palette - 1U].name;
+}
+
+static bool is_custom_palette_id(uint8_t palette)
+{
+    return palette >= CUSTOM_PALETTE_START_ID && palette < PALETTE_COUNT;
+}
+
+static bool custom_palette_is_empty(const custom_palette_t *palette)
+{
+    return palette->stop_count == 0U && palette->name[0] == '\0';
+}
+
+static size_t custom_palette_slot_from_id(uint8_t palette)
+{
+    return (size_t) (palette - CUSTOM_PALETTE_START_ID);
 }
 
 static uint8_t clamp_u8(int value)
@@ -425,22 +727,9 @@ static void fill_pixels_rgb(uint8_t red, uint8_t green, uint8_t blue)
     }
 }
 
-static uint8_t led_index_to_palette_index(uint16_t index)
-{
-    return (uint8_t) ((((uint32_t) index) * 256U) / CONFIG_LIGHT_RING_LED_COUNT);
-}
-
-static void sample_builtin_palette(uint8_t palette, uint8_t index,
+static void sample_palette_entries(const uint8_t colors[PALETTE_ENTRY_COUNT][3], uint8_t index,
                                    uint8_t *red, uint8_t *green, uint8_t *blue)
 {
-    uint8_t palette_id = palette;
-    if (palette_id == 0U) {
-        palette_id = 1U;
-    } else if (palette_id > BUILTIN_PALETTE_COUNT) {
-        palette_id = BUILTIN_PALETTE_COUNT;
-    }
-
-    const uint8_t (*colors)[3] = s_builtin_palettes[palette_id - 1U].colors;
     uint8_t hi4 = (uint8_t) (index >> 4);
     uint8_t lo4 = (uint8_t) (index & 0x0FU);
     const uint8_t *from = colors[hi4];
@@ -461,6 +750,24 @@ static void sample_builtin_palette(uint8_t palette, uint8_t index,
     *blue = (uint8_t) ((((uint16_t) from[2] * blend_from) + ((uint16_t) to[2] * blend_to)) >> 8);
 }
 
+static uint8_t led_index_to_palette_index(uint16_t index)
+{
+    return (uint8_t) ((((uint32_t) index) * 256U) / CONFIG_LIGHT_RING_LED_COUNT);
+}
+
+static void sample_builtin_palette(uint8_t palette, uint8_t index,
+                                   uint8_t *red, uint8_t *green, uint8_t *blue)
+{
+    uint8_t palette_id = palette;
+    if (palette_id == 0U) {
+        palette_id = 1U;
+    } else if (palette_id > BUILTIN_PALETTE_COUNT) {
+        palette_id = BUILTIN_PALETTE_COUNT;
+    }
+
+    sample_palette_entries(s_builtin_palettes[palette_id - 1U].colors, index, red, green, blue);
+}
+
 static void resolve_state_rgb(const light_state_t *state, uint8_t palette_index, uint8_t brightness,
                               uint8_t *red, uint8_t *green, uint8_t *blue)
 {
@@ -468,6 +775,17 @@ static void resolve_state_rgb(const light_state_t *state, uint8_t palette_index,
         *red = scale_component(state->red, brightness);
         *green = scale_component(state->green, brightness);
         *blue = scale_component(state->blue, brightness);
+        return;
+    }
+
+    if (state->has_palette_cache) {
+        uint8_t cached_red;
+        uint8_t cached_green;
+        uint8_t cached_blue;
+        sample_palette_entries(state->palette_cache, palette_index, &cached_red, &cached_green, &cached_blue);
+        *red = scale_component(cached_red, brightness);
+        *green = scale_component(cached_green, brightness);
+        *blue = scale_component(cached_blue, brightness);
         return;
     }
 
@@ -530,13 +848,32 @@ static void snapshot_light_state(light_state_t *state)
 {
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     *state = s_light_state;
+
+    state->has_palette_cache = false;
+    memset(state->palette_cache, 0, sizeof(state->palette_cache));
+    memset(state->palette_label, 0, sizeof(state->palette_label));
+
+    if (is_custom_palette_id(state->palette)) {
+        size_t slot = custom_palette_slot_from_id(state->palette);
+        memcpy(state->palette_cache, s_custom_palettes[slot].colors, sizeof(state->palette_cache));
+        strlcpy(state->palette_label, s_custom_palettes[slot].name, sizeof(state->palette_label));
+        state->has_palette_cache = true;
+    } else {
+        strlcpy(state->palette_label, palette_name(state->palette), sizeof(state->palette_label));
+    }
+
     xSemaphoreGive(s_state_lock);
 }
 
 static void store_light_state(const light_state_t *state)
 {
+    light_state_t sanitized = *state;
+    sanitized.has_palette_cache = false;
+    memset(sanitized.palette_cache, 0, sizeof(sanitized.palette_cache));
+    memset(sanitized.palette_label, 0, sizeof(sanitized.palette_label));
+
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    s_light_state = *state;
+    s_light_state = sanitized;
     xSemaphoreGive(s_state_lock);
 }
 
@@ -1050,7 +1387,7 @@ static cJSON *build_state_json(void)
     cJSON_AddNumberToObject(root, "pal", state.palette);
     cJSON_AddNumberToObject(root, "palette", state.palette);
     cJSON_AddStringToObject(root, "effectName", effect_name((effect_id_t) state.effect));
-    cJSON_AddStringToObject(root, "paletteName", palette_name(state.palette));
+    cJSON_AddStringToObject(root, "paletteName", state.palette_label[0] != '\0' ? state.palette_label : palette_name(state.palette));
 
     cJSON_AddItemToArray(color_array, cJSON_CreateNumber(state.red));
     cJSON_AddItemToArray(color_array, cJSON_CreateNumber(state.green));
@@ -1091,9 +1428,326 @@ static cJSON *build_info_json(void)
 
     cJSON_AddItemToArray(api, cJSON_CreateString("/json/info"));
     cJSON_AddItemToArray(api, cJSON_CreateString("/json/state"));
+    cJSON_AddItemToArray(api, cJSON_CreateString("/json/palettes"));
     cJSON_AddItemToArray(api, cJSON_CreateString("/win"));
 
     return root;
+}
+
+static int hex_digit_to_value(char digit)
+{
+    if (digit >= '0' && digit <= '9') {
+        return digit - '0';
+    }
+    if (digit >= 'a' && digit <= 'f') {
+        return 10 + digit - 'a';
+    }
+    if (digit >= 'A' && digit <= 'F') {
+        return 10 + digit - 'A';
+    }
+    return -1;
+}
+
+static bool parse_hex_color(const char *value, uint8_t *red, uint8_t *green, uint8_t *blue)
+{
+    if (value == NULL) {
+        return false;
+    }
+
+    const char *hex = (value[0] == '#') ? value + 1 : value;
+    if (strlen(hex) != 6U) {
+        return false;
+    }
+
+    int nibbles[6];
+    for (size_t index = 0; index < 6U; ++index) {
+        nibbles[index] = hex_digit_to_value(hex[index]);
+        if (nibbles[index] < 0) {
+            return false;
+        }
+    }
+
+    *red = (uint8_t) ((nibbles[0] << 4) | nibbles[1]);
+    *green = (uint8_t) ((nibbles[2] << 4) | nibbles[3]);
+    *blue = (uint8_t) ((nibbles[4] << 4) | nibbles[5]);
+    return true;
+}
+
+static void serialize_palette_colors(cJSON *json, const uint8_t colors[PALETTE_ENTRY_COUNT][3])
+{
+    for (size_t index = 0; index < PALETTE_ENTRY_COUNT; ++index) {
+        cJSON *entry = cJSON_CreateArray();
+        cJSON_AddItemToArray(entry, cJSON_CreateNumber((index == (PALETTE_ENTRY_COUNT - 1U)) ? 255 : (int) (index << 4)));
+        cJSON_AddItemToArray(entry, cJSON_CreateNumber(colors[index][0]));
+        cJSON_AddItemToArray(entry, cJSON_CreateNumber(colors[index][1]));
+        cJSON_AddItemToArray(entry, cJSON_CreateNumber(colors[index][2]));
+        cJSON_AddItemToArray(json, entry);
+    }
+}
+
+static void serialize_palette_stops(cJSON *json, const palette_stop_t *stops, size_t count)
+{
+    for (size_t index = 0; index < count; ++index) {
+        cJSON *entry = cJSON_CreateArray();
+        cJSON_AddItemToArray(entry, cJSON_CreateNumber(stops[index].index));
+        cJSON_AddItemToArray(entry, cJSON_CreateNumber(stops[index].red));
+        cJSON_AddItemToArray(entry, cJSON_CreateNumber(stops[index].green));
+        cJSON_AddItemToArray(entry, cJSON_CreateNumber(stops[index].blue));
+        cJSON_AddItemToArray(json, entry);
+    }
+}
+
+static cJSON *build_palettes_json(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *palette_map = cJSON_AddObjectToObject(root, "p");
+    cJSON *items = cJSON_AddArrayToObject(root, "items");
+    light_state_t state;
+    uint8_t primary_colors[PALETTE_ENTRY_COUNT][3];
+
+    snapshot_light_state(&state);
+    for (size_t index = 0; index < PALETTE_ENTRY_COUNT; ++index) {
+        primary_colors[index][0] = state.red;
+        primary_colors[index][1] = state.green;
+        primary_colors[index][2] = state.blue;
+    }
+
+    cJSON_AddNumberToObject(root, "m", 0);
+    cJSON_AddNumberToObject(root, "selected", state.palette);
+    cJSON_AddNumberToObject(root, "customStart", CUSTOM_PALETTE_START_ID);
+    cJSON_AddNumberToObject(root, "customCount", CUSTOM_PALETTE_SLOT_COUNT);
+
+    for (uint8_t palette_id = 0U; palette_id < PALETTE_COUNT; ++palette_id) {
+        const uint8_t (*colors)[3] = primary_colors;
+        const char *name = "Primary";
+        bool editable = false;
+        bool empty = false;
+        const palette_stop_t *stops = NULL;
+        size_t stop_count = 0U;
+        char generated_name[PALETTE_NAME_LENGTH];
+
+        if (palette_id == 0U) {
+            name = "Primary";
+        } else if (palette_id < CUSTOM_PALETTE_START_ID) {
+            colors = s_builtin_palettes[palette_id - 1U].colors;
+            name = s_builtin_palettes[palette_id - 1U].name;
+        } else {
+            size_t slot = custom_palette_slot_from_id(palette_id);
+            colors = s_custom_palettes[slot].colors;
+            editable = true;
+            empty = custom_palette_is_empty(&s_custom_palettes[slot]);
+            if (empty) {
+                snprintf(generated_name, sizeof(generated_name), "Custom %u", (unsigned) (slot + 1U));
+                name = generated_name;
+            } else {
+                name = s_custom_palettes[slot].name;
+                stops = s_custom_palettes[slot].stops;
+                stop_count = s_custom_palettes[slot].stop_count;
+            }
+        }
+
+        char key[8];
+        snprintf(key, sizeof(key), "%u", palette_id);
+
+        cJSON *palette_array = cJSON_AddArrayToObject(palette_map, key);
+        if (!empty) {
+            serialize_palette_colors(palette_array, colors);
+        }
+
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "id", palette_id);
+        cJSON_AddStringToObject(item, "name", name);
+        cJSON_AddBoolToObject(item, "editable", editable);
+        cJSON_AddBoolToObject(item, "empty", empty);
+        cJSON *item_colors = cJSON_AddArrayToObject(item, "colors");
+        if (!empty) {
+            serialize_palette_colors(item_colors, colors);
+        }
+        if (editable && stops != NULL) {
+            cJSON *item_stops = cJSON_AddArrayToObject(item, "stops");
+            serialize_palette_stops(item_stops, stops, stop_count);
+        }
+        cJSON_AddItemToArray(items, item);
+    }
+
+    return root;
+}
+
+static bool parse_palette_stop_array(cJSON *entry, palette_stop_t *stop)
+{
+    if (!cJSON_IsArray(entry) || cJSON_GetArraySize(entry) < 2) {
+        return false;
+    }
+
+    cJSON *index = cJSON_GetArrayItem(entry, 0);
+    cJSON *value_a = cJSON_GetArrayItem(entry, 1);
+    if (!cJSON_IsNumber(index)) {
+        return false;
+    }
+
+    stop->index = clamp_u8(index->valueint);
+    if (cJSON_IsString(value_a) && value_a->valuestring != NULL) {
+        return parse_hex_color(value_a->valuestring, &stop->red, &stop->green, &stop->blue);
+    }
+
+    cJSON *value_b = cJSON_GetArrayItem(entry, 2);
+    cJSON *value_c = cJSON_GetArrayItem(entry, 3);
+    if (!cJSON_IsNumber(value_a) || !cJSON_IsNumber(value_b) || !cJSON_IsNumber(value_c)) {
+        return false;
+    }
+
+    stop->red = clamp_u8(value_a->valueint);
+    stop->green = clamp_u8(value_b->valueint);
+    stop->blue = clamp_u8(value_c->valueint);
+    return true;
+}
+
+static bool parse_palette_definition(cJSON *source, palette_stop_t *stops, uint8_t *stop_count)
+{
+    if (!cJSON_IsArray(source)) {
+        return false;
+    }
+
+    uint8_t count = 0U;
+    cJSON *first = cJSON_GetArrayItem(source, 0);
+
+    if (cJSON_IsArray(first)) {
+        int total = cJSON_GetArraySize(source);
+        for (int index = 0; index < total && count < CUSTOM_PALETTE_MAX_STOPS; ++index) {
+            if (parse_palette_stop_array(cJSON_GetArrayItem(source, index), &stops[count])) {
+                ++count;
+            }
+        }
+    } else {
+        int total = cJSON_GetArraySize(source);
+        int index = 0;
+        while (index < total && count < CUSTOM_PALETTE_MAX_STOPS) {
+            cJSON *position = cJSON_GetArrayItem(source, index++);
+            if (!cJSON_IsNumber(position)) {
+                break;
+            }
+
+            palette_stop_t stop = {
+                .index = clamp_u8(position->valueint),
+                .red = 0U,
+                .green = 0U,
+                .blue = 0U,
+            };
+
+            cJSON *value = cJSON_GetArrayItem(source, index++);
+            if (cJSON_IsString(value) && value->valuestring != NULL) {
+                if (parse_hex_color(value->valuestring, &stop.red, &stop.green, &stop.blue)) {
+                    stops[count++] = stop;
+                }
+                continue;
+            }
+
+            cJSON *green = cJSON_GetArrayItem(source, index++);
+            cJSON *blue = cJSON_GetArrayItem(source, index++);
+            if (!cJSON_IsNumber(value) || !cJSON_IsNumber(green) || !cJSON_IsNumber(blue)) {
+                break;
+            }
+
+            stop.red = clamp_u8(value->valueint);
+            stop.green = clamp_u8(green->valueint);
+            stop.blue = clamp_u8(blue->valueint);
+            stops[count++] = stop;
+        }
+    }
+
+    if (count == 0U) {
+        return false;
+    }
+
+    *stop_count = count;
+    return true;
+}
+
+static esp_err_t json_palettes_get_handler(httpd_req_t *req)
+{
+    cJSON *palettes = build_palettes_json();
+    esp_err_t ret = send_json_response(req, palettes);
+    cJSON_Delete(palettes);
+    return ret;
+}
+
+static esp_err_t json_palettes_post_handler(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len >= HTTP_RECV_BUFFER_SIZE) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Invalid body length");
+    }
+
+    char body[HTTP_RECV_BUFFER_SIZE];
+    int total_read = 0;
+    while (total_read < req->content_len) {
+        int read_now = httpd_req_recv(req, body + total_read, req->content_len - total_read);
+        if (read_now <= 0) {
+            return httpd_resp_send_500(req);
+        }
+        total_read += read_now;
+    }
+    body[total_read] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "JSON parse failed");
+    }
+
+    cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
+    cJSON *name = cJSON_GetObjectItemCaseSensitive(root, "name");
+    cJSON *stops = cJSON_GetObjectItemCaseSensitive(root, "stops");
+    cJSON *palette = cJSON_GetObjectItemCaseSensitive(root, "palette");
+    cJSON *colors = cJSON_GetObjectItemCaseSensitive(root, "colors");
+    cJSON *definition = cJSON_IsArray(stops) ? stops : (cJSON_IsArray(palette) ? palette : colors);
+
+    if (!cJSON_IsNumber(id)) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Palette id is required");
+    }
+
+    uint8_t palette_id = clamp_palette(id->valueint);
+    if (!is_custom_palette_id(palette_id)) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Palette id must refer to a custom palette");
+    }
+
+    custom_palette_t updated = {0};
+    uint8_t stop_count = 0U;
+    size_t slot = custom_palette_slot_from_id(palette_id);
+
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    updated = s_custom_palettes[slot];
+    xSemaphoreGive(s_state_lock);
+
+    if (!parse_palette_definition(definition, updated.stops, &stop_count)) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Palette definition is invalid");
+    }
+
+    updated.stop_count = stop_count;
+    if (cJSON_IsString(name) && name->valuestring != NULL && name->valuestring[0] != '\0') {
+        strlcpy(updated.name, name->valuestring, sizeof(updated.name));
+    }
+    rebuild_custom_palette_colors(&updated);
+
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    s_custom_palettes[slot] = updated;
+    xSemaphoreGive(s_state_lock);
+
+    cJSON_Delete(root);
+    if (save_custom_palettes_to_nvs() != ESP_OK) {
+        return httpd_resp_send_500(req);
+    }
+
+    cJSON *response = build_palettes_json();
+    esp_err_t ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    return ret;
 }
 
 static esp_err_t root_get_handler(httpd_req_t *req)
@@ -1224,7 +1878,7 @@ static esp_err_t win_get_handler(httpd_req_t *req)
 static esp_err_t start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 10;
     config.stack_size = 8192;
 
     ESP_RETURN_ON_ERROR(httpd_start(&s_http_server, &config), TAG, "httpd_start failed");
@@ -1249,6 +1903,16 @@ static esp_err_t start_http_server(void)
         .method = HTTP_POST,
         .handler = json_state_post_handler,
     };
+    const httpd_uri_t json_palettes_get = {
+        .uri = "/json/palettes",
+        .method = HTTP_GET,
+        .handler = json_palettes_get_handler,
+    };
+    const httpd_uri_t json_palettes_post = {
+        .uri = "/json/palettes",
+        .method = HTTP_POST,
+        .handler = json_palettes_post_handler,
+    };
     const httpd_uri_t win = {
         .uri = "/win",
         .method = HTTP_GET,
@@ -1259,6 +1923,8 @@ static esp_err_t start_http_server(void)
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_info), TAG, "register info handler failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_state_get), TAG, "register state GET handler failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_state_post), TAG, "register state POST handler failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_palettes_get), TAG, "register palettes GET handler failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_palettes_post), TAG, "register palettes POST handler failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &win), TAG, "register win handler failed");
 
     return ESP_OK;
@@ -1280,6 +1946,7 @@ void app_main(void)
 
     s_state_lock = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_state_lock != NULL ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(load_custom_palettes_from_nvs());
 
     build_device_identity();
 
