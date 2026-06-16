@@ -81,7 +81,7 @@ Custom palette IDs:
 
 When `pal` / `palette` is `0`, the current primary color (`color` or `seg[0].col[0]`) is used instead of a built-in palette.
 
-The embedded web UI now exposes a palette gallery and a custom editor. Built-in palettes are read-only. Custom palettes are stored as up to 8 WLED-style color stops in flash and restored on boot.
+The embedded web UI now exposes a palette gallery and a custom editor. Built-in palettes are read-only. Custom palettes are stored as up to 27 WLED-style color stops in flash and restored on boot.
 Unused custom slots stay hidden from the active palette picker until you create one with `New Custom Palette`.
 
 Simple example:
