@@ -24,7 +24,7 @@ It is structured like the local `lvgl_ppt` project, but the runtime is focused o
   - `GET /json/palettes`
   - `POST /json/palettes`
   - `GET /win?T=1&A=160&R=255&G=80&B=0&FX=2&SX=128&FP=4`
-- Built-in effects: solid, breathe, rainbow, chase, color_wipe, twinkle, scanner, sparkle
+- Built-in effects: solid, breathe, rainbow, chase, color_wipe, twinkle, scanner, sparkle, swoosh
 - WLED-style palette selection via JSON `pal` / `palette` and legacy `FP` query parameter
 - Built-in palette gallery plus 8 custom palette slots with NVS persistence
 - Visual custom palette editor in the embedded web UI, including new custom palette creation and custom naming
@@ -53,7 +53,15 @@ idf.py -p <PORT> flash monitor
 
 `POST /json/state` accepts both a simple payload and a WLED-like segment payload.
 
-Supported string effect names: `solid`, `breathe`, `rainbow`, `chase`, `color_wipe`, `twinkle`, `scanner`, `sparkle`.
+Supported string effect names: `solid`, `breathe`, `rainbow`, `chase`, `color_wipe`, `twinkle`, `scanner`, `sparkle`, `swoosh`.
+
+The `swoosh` effect uses three palettes:
+
+- `bgPal`: background palette, rendered constantly across the ring
+- `leftPal`: palette used by the left-moving swoosh from LED 27 toward LED 14
+- `rightPal`: palette used by the right-moving swoosh from LED 27 toward LED 13 following `27 -> 1 -> 2 -> 3 ...`
+- `leftStops`: how many LEDs the left swoosh occupies
+- `rightStops`: how many LEDs the right swoosh occupies
 
 Built-in palette IDs:
 
@@ -81,7 +89,7 @@ Custom palette IDs:
 
 When `pal` / `palette` is `0`, the current primary color (`color` or `seg[0].col[0]`) is used instead of a built-in palette.
 
-The embedded web UI now exposes a palette gallery and a custom editor. Built-in palettes are read-only. Custom palettes are stored as up to 27 WLED-style color stops in flash and restored on boot.
+The embedded web UI now exposes a palette gallery and a custom editor. Built-in palettes are read-only. Custom palettes are stored as up to 27 WLED-style color stops in flash and restored on boot. Each custom palette can also enable `circle` mode so LED 27 wraps back to LED 1 for the final transition.
 Unused custom slots stay hidden from the active palette picker until you create one with `New Custom Palette`.
 
 Simple example:
@@ -114,15 +122,32 @@ WLED-style example:
 }
 ```
 
+Swoosh example:
+
+```json
+{
+  "on": true,
+  "bri": 200,
+  "effect": "swoosh",
+  "speed": 160,
+  "bgPal": 2,
+  "leftPal": 7,
+  "rightPal": 8,
+  "leftStops": 6,
+  "rightStops": 5
+}
+```
+
 Custom palette example:
 
-`POST /json/palettes` accepts `id`, optional `name`, and a palette definition in `stops`, `palette`, or `colors`.
+`POST /json/palettes` accepts `id`, optional `name`, optional `circle`, and a palette definition in `stops`, `palette`, or `colors`.
 Each stop can be either `[index, r, g, b]` or `[index, "#RRGGBB"]`.
 
 ```json
 {
   "id": 10,
   "name": "Aurora",
+  "circle": true,
   "stops": [
     [0, 8, 16, 40],
     [96, 0, 180, 120],
@@ -134,7 +159,7 @@ Each stop can be either `[index, r, g, b]` or `[index, "#RRGGBB"]`.
 
 `GET /json/palettes` returns a WLED-inspired palette catalog with:
 
-- `items`: palette cards for the UI, including `editable`, `colors`, and custom `stops`
+- `items`: palette cards for the UI, including `editable`, `colors`, custom `stops`, and the custom `circle` flag
 - `selected`: currently active palette id
 - `customStart` / `customCount`: custom palette slot range
 - `p`: palette map keyed by palette id
