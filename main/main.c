@@ -556,13 +556,12 @@ static const char INDEX_HTML[] =
     "            <div><label for=\"color\">Primary Color</label><input id=\"color\" type=\"color\" value=\"#ff7810\"></div>\n"
     "            <div><label for=\"brightness\">Brightness</label><input id=\"brightness\" type=\"range\" min=\"0\" max=\"255\" value=\"160\"></div>\n"
     "            <div><label for=\"effect\">Effect</label><select id=\"effect\"><option value=\"0\">Solid</option><option value=\"1\">Breathe</option><option value=\"2\">Rainbow</option><option value=\"3\">Chase</option><option value=\"4\">Color Wipe</option><option value=\"5\">Twinkle</option><option value=\"6\">Scanner</option><option value=\"7\">Sparkle</option><option value=\"8\">Swoosh</option></select></div>\n"
-    "            <div><label for=\"palette\">Palette</label><select id=\"palette\"></select></div>\n"
+    "            <div id=\"paletteRow\"><label for=\"palette\">Palette</label><select id=\"palette\"></select></div>\n"
     "            <div><label for=\"speed\">Speed</label><input id=\"speed\" type=\"range\" min=\"1\" max=\"255\" value=\"128\"></div>\n"
-    "            <div><label for=\"swooshBgPalette\">Swoosh Background</label><select id=\"swooshBgPalette\"></select></div>\n"
-    "            <div><label for=\"swooshLeftPalette\">Swoosh Left</label><select id=\"swooshLeftPalette\"></select></div>\n"
-    "            <div><label for=\"swooshRightPalette\">Swoosh Right</label><select id=\"swooshRightPalette\"></select></div>\n"
-    "            <div><label for=\"swooshLeftStops\">Left Stops</label><input id=\"swooshLeftStops\" type=\"number\" min=\"1\" max=\"14\" value=\"5\"></div>\n"
-    "            <div><label for=\"swooshRightStops\">Right Stops</label><input id=\"swooshRightStops\" type=\"number\" min=\"1\" max=\"14\" value=\"5\"></div>\n"
+    "            <div id=\"swooshBgRow\" style=\"display:none\"><label for=\"swooshBgPalette\">Background Palette</label><select id=\"swooshBgPalette\"></select></div>\n"
+    "            <div id=\"swooshLeftRow\" style=\"display:none\"><label for=\"swooshLeftPalette\">Left Palette</label><select id=\"swooshLeftPalette\"></select></div>\n"
+    "            <div id=\"swooshRightRow\" style=\"display:none\"><label for=\"swooshRightPalette\">Right Palette</label><select id=\"swooshRightPalette\"></select></div>\n"
+    "            <div id=\"sideLengthRow\" style=\"display:none\"><label for=\"sidePaletteLength\">Side Palette Length</label><input id=\"sidePaletteLength\" type=\"number\" min=\"1\" max=\"14\" value=\"5\"></div>\n"
     "          </div>\n"
     "          <div class=\"grid\">\n"
     "            <button id=\"applyBtn\">Apply State</button>\n"
@@ -636,8 +635,12 @@ static const char INDEX_HTML[] =
     "    const swooshBgPaletteInput = document.getElementById('swooshBgPalette');\n"
     "    const swooshLeftPaletteInput = document.getElementById('swooshLeftPalette');\n"
     "    const swooshRightPaletteInput = document.getElementById('swooshRightPalette');\n"
-    "    const swooshLeftStopsInput = document.getElementById('swooshLeftStops');\n"
-    "    const swooshRightStopsInput = document.getElementById('swooshRightStops');\n"
+    "    const sideLengthInput = document.getElementById('sidePaletteLength');\n"
+    "    const paletteRow = document.getElementById('paletteRow');\n"
+    "    const swooshBgRow = document.getElementById('swooshBgRow');\n"
+    "    const swooshLeftRow = document.getElementById('swooshLeftRow');\n"
+    "    const swooshRightRow = document.getElementById('swooshRightRow');\n"
+    "    const sideLengthRow = document.getElementById('sideLengthRow');\n"
     "    const powerLabel = document.getElementById('powerLabel');\n"
     "    const deviceInfo = document.getElementById('deviceInfo');\n"
     "    const paletteGallery = document.getElementById('paletteGallery');\n"
@@ -695,14 +698,16 @@ static const char INDEX_HTML[] =
     "    const baseRenderStopEditor = renderStopEditor;\n"
     "    renderStopEditor = function() { baseRenderStopEditor(); stopList.querySelectorAll('[data-role=index]').forEach(input => { input.dataset.role = 'index-led'; input.min = '1'; input.max = String(ledCount); input.step = '1'; input.value = String(clampLedIndex(paletteIndexToLedIndex(input.value, editingPaletteCircle))); const container = input.parentElement; const label = container ? container.querySelector('.mini-label') : null; if (label) label.textContent = 'LED'; }); };\n"
     "    function startNewPalette() { const item = nextEmptyCustomPalette(); if (!item) { editorHint.textContent = 'All custom palette slots are already in use.'; return; } loadPaletteEditor(item.id); }\n"
+    "    function updateEffectControls() { const isSwoosh = Number(effectInput.value) === 8; paletteRow.style.display = isSwoosh ? 'none' : ''; swooshBgRow.style.display = isSwoosh ? '' : 'none'; swooshLeftRow.style.display = isSwoosh ? '' : 'none'; swooshRightRow.style.display = isSwoosh ? '' : 'none'; sideLengthRow.style.display = isSwoosh ? '' : 'none'; }\n"
     "    async function loadInfo() { const response = await fetch('/json/info'); const info = await response.json(); deviceInfo.textContent = `${info.name} | AP ${info.wifi.ap_ssid} | LEDs ${info.led.count} @ GPIO${info.led.gpio}`; }\n"
     "    async function loadPalettes() { const response = await fetch('/json/palettes'); const json = await response.json(); paletteCatalog = Array.isArray(json.items) ? json.items : []; renderPaletteSelect(); renderPaletteGallery(); if (editingPaletteId !== null) { loadPaletteEditor(editingPaletteId); } else { renderStopEditor(); } }\n"
-    "    async function loadState() { const response = await fetch('/json/state'); const state = await response.json(); const seg = state.seg && state.seg[0] ? state.seg[0] : {}; const color = seg.col && seg.col[0] ? seg.col[0] : state.color; lastOn = !!state.on; selectedPaletteId = Number(seg.pal ?? state.pal ?? state.palette ?? 0); powerLabel.textContent = lastOn ? 'ON' : 'OFF'; brightnessInput.value = state.bri ?? 0; speedInput.value = seg.sx ?? state.speed ?? 128; effectInput.value = seg.fx ?? state.fx ?? 0; swooshBgPaletteInput.value = String(seg.bgPal ?? state.bgPal ?? 0); swooshLeftPaletteInput.value = String(seg.leftPal ?? state.leftPal ?? 0); swooshRightPaletteInput.value = String(seg.rightPal ?? state.rightPal ?? 0); swooshLeftStopsInput.value = String(seg.leftStops ?? state.leftStops ?? 5); swooshRightStopsInput.value = String(seg.rightStops ?? state.rightStops ?? 5); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { if (editingPaletteId !== selected.id) loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } if (Array.isArray(color)) { colorInput.value = rgbToHex(color); } }\n"
-    "    async function applyState() { const [r, g, b] = hexToRgb(colorInput.value); const payload = { on: true, bri: Number(brightnessInput.value), color: [r, g, b], effect: Number(effectInput.value), speed: Number(speedInput.value), palette: Number(paletteInput.value), bgPal: Number(swooshBgPaletteInput.value), leftPal: Number(swooshLeftPaletteInput.value), rightPal: Number(swooshRightPaletteInput.value), leftStops: Number(swooshLeftStopsInput.value), rightStops: Number(swooshRightStopsInput.value) }; await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
+    "    async function loadState() { const response = await fetch('/json/state'); const state = await response.json(); const seg = state.seg && state.seg[0] ? state.seg[0] : {}; const color = seg.col && seg.col[0] ? seg.col[0] : state.color; lastOn = !!state.on; selectedPaletteId = Number(seg.pal ?? state.pal ?? state.palette ?? 0); powerLabel.textContent = lastOn ? 'ON' : 'OFF'; brightnessInput.value = state.bri ?? 0; speedInput.value = seg.sx ?? state.speed ?? 128; effectInput.value = seg.fx ?? state.fx ?? 0; swooshBgPaletteInput.value = String(seg.bgPal ?? state.bgPal ?? 0); swooshLeftPaletteInput.value = String(seg.leftPal ?? state.leftPal ?? 0); swooshRightPaletteInput.value = String(seg.rightPal ?? state.rightPal ?? 0); sideLengthInput.value = String(seg.leftStops ?? state.leftStops ?? 5); updateEffectControls(); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { if (editingPaletteId !== selected.id) loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } if (Array.isArray(color)) { colorInput.value = rgbToHex(color); } }\n"
+    "    async function applyState() { const [r, g, b] = hexToRgb(colorInput.value); const payload = { on: true, bri: Number(brightnessInput.value), color: [r, g, b], effect: Number(effectInput.value), speed: Number(speedInput.value), palette: Number(paletteInput.value), bgPal: Number(swooshBgPaletteInput.value), leftPal: Number(swooshLeftPaletteInput.value), rightPal: Number(swooshRightPaletteInput.value), leftStops: Number(sideLengthInput.value), rightStops: Number(sideLengthInput.value) }; await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
     "    async function savePalette() { if (editingPaletteId === null) { editorHint.textContent = 'Select a custom palette before saving.'; return; } if (!editingStops.length) { editorHint.textContent = 'Add at least one color stop before saving.'; return; } const payload = { id: Number(editingPaletteId), name: customPaletteName.value.trim() || 'Custom Palette', circle: !!circlePaletteInput.checked, stops: editingStops.map(stop => [Number(stop.index), ...stop.rgb]) }; await fetch('/json/palettes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadPalettes(); await loadState(); loadPaletteEditor(editingPaletteId); }\n"
     "    document.getElementById('applyBtn').addEventListener('click', applyState);\n"
     "    document.getElementById('refreshBtn').addEventListener('click', loadState);\n"
     "    document.getElementById('toggleBtn').addEventListener('click', async () => { await fetch(`/win?T=${lastOn ? 0 : 1}`); await loadState(); });\n"
+    "    effectInput.addEventListener('change', updateEffectControls);\n"
     "    paletteInput.addEventListener('change', () => { selectedPaletteId = Number(paletteInput.value); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } });\n"
     "    stopList.addEventListener('input', event => { const target = event.target; const index = Number(target.dataset.index); if (Number.isNaN(index) || !editingStops[index]) return; if (target.dataset.role === 'index') { editingStops[index].index = Math.max(0, Math.min(255, Number(target.value) || 0)); editingStops.sort((a, b) => a.index - b.index); renderStopEditor(); } });\n"
     "    stopList.addEventListener('input', event => { const target = event.target; if (target.dataset.role !== 'index-led') return; const index = Number(target.dataset.index); if (Number.isNaN(index) || !editingStops[index]) return; const ledIndex = clampLedIndex(target.value); editingStops[index].index = ledIndexToPaletteIndex(ledIndex, editingPaletteCircle); renderPreview(editorPreview, previewColorsFromStops(editingStops, editingPaletteCircle)); });\n"
@@ -1138,7 +1143,7 @@ static uint32_t effect_delay_ms(const light_state_t *state)
     case EFFECT_SPARKLE:
         return speed_to_delay(state->speed, 26U, 58U);
     case EFFECT_SWOOSH:
-        return speed_to_delay(state->speed, 18U, 54U);
+        return speed_to_delay(state->speed, 40U, 180U);
     default:
         return 40U;
     }
@@ -1314,10 +1319,31 @@ static uint8_t swoosh_right_ring_index(uint8_t position)
     return (uint8_t) ((CONFIG_LIGHT_RING_LED_COUNT - 1U + position) % CONFIG_LIGHT_RING_LED_COUNT);
 }
 
+static void load_swoosh_palette_context(light_state_t *ctx, const light_state_t *base, uint8_t palette_id)
+{
+    *ctx = *base;
+    ctx->palette = palette_id;
+    ctx->has_palette_cache = false;
+    ctx->palette_stop_count = 0U;
+    ctx->palette_circular = false;
+    memset(ctx->palette_stops, 0, sizeof(ctx->palette_stops));
+    memset(ctx->palette_cache, 0, sizeof(ctx->palette_cache));
+
+    if (is_custom_palette_id(palette_id)) {
+        size_t slot = custom_palette_slot_from_id(palette_id);
+        const custom_palette_t *pal = &s_custom_palettes[slot];
+        ctx->palette_stop_count = custom_palette_stop_count(pal);
+        ctx->palette_circular = custom_palette_is_circular(pal);
+        memcpy(ctx->palette_stops, pal->stops, sizeof(ctx->palette_stops));
+        memcpy(ctx->palette_cache, pal->colors, sizeof(ctx->palette_cache));
+        ctx->has_palette_cache = ctx->palette_stop_count > 0U;
+    }
+}
+
 static void render_swoosh(const light_state_t *state, uint32_t frame)
 {
-    light_state_t background = *state;
-    background.palette = state->swoosh_background_palette;
+    light_state_t background;
+    load_swoosh_palette_context(&background, state, state->swoosh_background_palette);
 
     for (uint16_t index = 0; index < CONFIG_LIGHT_RING_LED_COUNT; ++index) {
         set_state_pixel_level(index, &background, 255U);
@@ -1325,12 +1351,12 @@ static void render_swoosh(const light_state_t *state, uint32_t frame)
 
     uint8_t left_span = clamp_swoosh_span(state->swoosh_left_stops);
     uint8_t right_span = clamp_swoosh_span(state->swoosh_right_stops);
-    uint8_t head = (uint8_t) ((frame * (1U + ((uint32_t) state->speed / 48U))) % SWOOSH_PATH_LENGTH);
-    light_state_t left_state = *state;
-    light_state_t right_state = *state;
+    uint8_t head = (uint8_t) ((frame * (1U + ((uint32_t) state->speed / 96U))) % SWOOSH_PATH_LENGTH);
+    light_state_t left_state;
+    light_state_t right_state;
 
-    left_state.palette = state->swoosh_left_palette;
-    right_state.palette = state->swoosh_right_palette;
+    load_swoosh_palette_context(&left_state, state, state->swoosh_left_palette);
+    load_swoosh_palette_context(&right_state, state, state->swoosh_right_palette);
 
     for (uint8_t tail = 0; tail < left_span; ++tail) {
         uint8_t position = (uint8_t) ((head + SWOOSH_PATH_LENGTH - tail) % SWOOSH_PATH_LENGTH);
