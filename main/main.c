@@ -18,6 +18,8 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "lwip/ip4_addr.h"
+#include "lwip/sockets.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -39,6 +41,8 @@
 #define CUSTOM_PALETTE_CIRCULAR_FLAG 0x80U
 #define CUSTOM_PALETTE_STOP_COUNT_MASK 0x7FU
 #define SWOOSH_PATH_LENGTH          ((CONFIG_LIGHT_RING_LED_COUNT + 1U) / 2U)
+#define DNS_SERVER_PORT             53
+#define DNS_PACKET_MAX_SIZE         512
 #define STRINGIFY_HELPER(value)     #value
 #define STRINGIFY(value)            STRINGIFY_HELPER(value)
 
@@ -76,6 +80,7 @@ typedef struct {
 
 typedef struct {
     bool on;
+    bool paused;
     uint8_t brightness;
     uint8_t red;
     uint8_t green;
@@ -107,6 +112,7 @@ static char s_device_name[32];
 static char s_ap_ssid[33];
 static char s_sta_ip[16];
 static bool s_sta_connected;
+static esp_ip4_addr_t s_ap_ip;
 static custom_palette_t s_custom_palettes[CUSTOM_PALETTE_SLOT_COUNT];
 
 // WLED-inspired fixed palettes sampled with a 16-entry blended lookup.
@@ -243,6 +249,7 @@ static const custom_palette_t s_default_custom_palettes[CUSTOM_PALETTE_SLOT_COUN
 
 static light_state_t s_light_state = {
     .on = true,
+    .paused = false,
     .brightness = CONFIG_LIGHT_RING_DEFAULT_BRIGHTNESS,
     .red = 255,
     .green = 120,
@@ -550,7 +557,7 @@ static const char INDEX_HTML[] =
     "          <p>WLED-style ESP-IDF control surface with built-in and custom palettes for a 27-pixel ring on GPIO16.</p>\n"
     "          <div class=\"row\">\n"
     "            <button id=\"toggleBtn\">Toggle Power</button>\n"
-    "            <div class=\"pill\"><span>Status</span><strong id=\"powerLabel\">Unknown</strong></div>\n"
+    "            <button id=\"suspendBtn\" class=\"secondary\">Suspend</button>\n"
     "          </div>\n"
     "          <div class=\"grid\">\n"
     "            <div><label for=\"color\">Primary Color</label><input id=\"color\" type=\"color\" value=\"#ff7810\"></div>\n"
@@ -641,7 +648,7 @@ static const char INDEX_HTML[] =
     "    const swooshLeftRow = document.getElementById('swooshLeftRow');\n"
     "    const swooshRightRow = document.getElementById('swooshRightRow');\n"
     "    const sideLengthRow = document.getElementById('sideLengthRow');\n"
-    "    const powerLabel = document.getElementById('powerLabel');\n"
+    "    const suspendBtn = document.getElementById('suspendBtn');\n"
     "    const deviceInfo = document.getElementById('deviceInfo');\n"
     "    const paletteGallery = document.getElementById('paletteGallery');\n"
     "    const editorHint = document.getElementById('editorHint');\n"
@@ -663,6 +670,7 @@ static const char INDEX_HTML[] =
     "    const dialogCancelBtn = document.getElementById('dialogCancelBtn');\n"
     "    const dialogApplyBtn = document.getElementById('dialogApplyBtn');\n"
     "    let lastOn = true;\n"
+    "    let lastPaused = false;\n"
     "    let paletteCatalog = [];\n"
     "    let selectedPaletteId = 0;\n"
     "    let editingPaletteId = null;\n"
@@ -701,12 +709,14 @@ static const char INDEX_HTML[] =
     "    function updateEffectControls() { const isSwoosh = Number(effectInput.value) === 8; paletteRow.style.display = isSwoosh ? 'none' : ''; swooshBgRow.style.display = isSwoosh ? '' : 'none'; swooshLeftRow.style.display = isSwoosh ? '' : 'none'; swooshRightRow.style.display = isSwoosh ? '' : 'none'; sideLengthRow.style.display = isSwoosh ? '' : 'none'; }\n"
     "    async function loadInfo() { const response = await fetch('/json/info'); const info = await response.json(); deviceInfo.textContent = `${info.name} | AP ${info.wifi.ap_ssid} | LEDs ${info.led.count} @ GPIO${info.led.gpio}`; }\n"
     "    async function loadPalettes() { const response = await fetch('/json/palettes'); const json = await response.json(); paletteCatalog = Array.isArray(json.items) ? json.items : []; renderPaletteSelect(); renderPaletteGallery(); if (editingPaletteId !== null) { loadPaletteEditor(editingPaletteId); } else { renderStopEditor(); } }\n"
-    "    async function loadState() { const response = await fetch('/json/state'); const state = await response.json(); const seg = state.seg && state.seg[0] ? state.seg[0] : {}; const color = seg.col && seg.col[0] ? seg.col[0] : state.color; lastOn = !!state.on; selectedPaletteId = Number(seg.pal ?? state.pal ?? state.palette ?? 0); powerLabel.textContent = lastOn ? 'ON' : 'OFF'; brightnessInput.value = state.bri ?? 0; speedInput.value = seg.sx ?? state.speed ?? 128; effectInput.value = seg.fx ?? state.fx ?? 0; swooshBgPaletteInput.value = String(seg.bgPal ?? state.bgPal ?? 0); swooshLeftPaletteInput.value = String(seg.leftPal ?? state.leftPal ?? 0); swooshRightPaletteInput.value = String(seg.rightPal ?? state.rightPal ?? 0); sideLengthInput.value = String(seg.leftStops ?? state.leftStops ?? 5); updateEffectControls(); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { if (editingPaletteId !== selected.id) loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } if (Array.isArray(color)) { colorInput.value = rgbToHex(color); } }\n"
-    "    async function applyState() { const [r, g, b] = hexToRgb(colorInput.value); const payload = { on: true, bri: Number(brightnessInput.value), color: [r, g, b], effect: Number(effectInput.value), speed: Number(speedInput.value), palette: Number(paletteInput.value), bgPal: Number(swooshBgPaletteInput.value), leftPal: Number(swooshLeftPaletteInput.value), rightPal: Number(swooshRightPaletteInput.value), leftStops: Number(sideLengthInput.value), rightStops: Number(sideLengthInput.value) }; await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
+    "    function updateSuspendButtonLabel() { suspendBtn.textContent = lastPaused ? 'Resume' : 'Suspend'; }\n"
+    "    async function loadState() { const response = await fetch('/json/state'); const state = await response.json(); const seg = state.seg && state.seg[0] ? state.seg[0] : {}; const color = seg.col && seg.col[0] ? seg.col[0] : state.color; lastOn = !!state.on; lastPaused = !!state.paused; selectedPaletteId = Number(seg.pal ?? state.pal ?? state.palette ?? 0); updateSuspendButtonLabel(); brightnessInput.value = state.bri ?? 0; speedInput.value = seg.sx ?? state.speed ?? 128; effectInput.value = seg.fx ?? state.fx ?? 0; swooshBgPaletteInput.value = String(seg.bgPal ?? state.bgPal ?? 0); swooshLeftPaletteInput.value = String(seg.leftPal ?? state.leftPal ?? 0); swooshRightPaletteInput.value = String(seg.rightPal ?? state.rightPal ?? 0); sideLengthInput.value = String(seg.leftStops ?? state.leftStops ?? 5); updateEffectControls(); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { if (editingPaletteId !== selected.id) loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } if (Array.isArray(color)) { colorInput.value = rgbToHex(color); } }\n"
+    "    async function applyState() { const [r, g, b] = hexToRgb(colorInput.value); const payload = { on: true, paused: false, bri: Number(brightnessInput.value), color: [r, g, b], effect: Number(effectInput.value), speed: Number(speedInput.value), palette: Number(paletteInput.value), bgPal: Number(swooshBgPaletteInput.value), leftPal: Number(swooshLeftPaletteInput.value), rightPal: Number(swooshRightPaletteInput.value), leftStops: Number(sideLengthInput.value), rightStops: Number(sideLengthInput.value) }; await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
     "    async function savePalette() { if (editingPaletteId === null) { editorHint.textContent = 'Select a custom palette before saving.'; return; } if (!editingStops.length) { editorHint.textContent = 'Add at least one color stop before saving.'; return; } const payload = { id: Number(editingPaletteId), name: customPaletteName.value.trim() || 'Custom Palette', circle: !!circlePaletteInput.checked, stops: editingStops.map(stop => [Number(stop.index), ...stop.rgb]) }; await fetch('/json/palettes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadPalettes(); await loadState(); loadPaletteEditor(editingPaletteId); }\n"
     "    document.getElementById('applyBtn').addEventListener('click', applyState);\n"
     "    document.getElementById('refreshBtn').addEventListener('click', loadState);\n"
     "    document.getElementById('toggleBtn').addEventListener('click', async () => { await fetch(`/win?T=${lastOn ? 0 : 1}`); await loadState(); });\n"
+    "    suspendBtn.addEventListener('click', async () => { await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paused: !lastPaused }) }); await loadState(); });\n"
     "    effectInput.addEventListener('change', updateEffectControls);\n"
     "    paletteInput.addEventListener('change', () => { selectedPaletteId = Number(paletteInput.value); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } });\n"
     "    stopList.addEventListener('input', event => { const target = event.target; const index = Number(target.dataset.index); if (Number.isNaN(index) || !editingStops[index]) return; if (target.dataset.role === 'index') { editingStops[index].index = Math.max(0, Math.min(255, Number(target.value) || 0)); editingStops.sort((a, b) => a.index - b.index); renderStopEditor(); } });\n"
@@ -1360,16 +1370,18 @@ static void render_swoosh(const light_state_t *state, uint32_t frame)
 
     for (uint8_t tail = 0; tail < left_span; ++tail) {
         uint8_t position = (uint8_t) ((head + SWOOSH_PATH_LENGTH - tail) % SWOOSH_PATH_LENGTH);
+        uint8_t palette_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - position);
         uint8_t led = swoosh_left_ring_index(position);
         uint8_t level = (uint8_t) (255U - ((uint16_t) tail * 196U) / left_span);
-        set_state_palette_level(led, &left_state, led_index_to_palette_index_linear(position), level);
+        set_state_palette_level(led, &left_state, led_index_to_palette_index_linear(palette_position), level);
     }
 
     for (uint8_t tail = 0; tail < right_span; ++tail) {
         uint8_t position = (uint8_t) ((head + SWOOSH_PATH_LENGTH - tail) % SWOOSH_PATH_LENGTH);
+        uint8_t palette_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - position);
         uint8_t led = swoosh_right_ring_index(position);
         uint8_t level = (uint8_t) (255U - ((uint16_t) tail * 196U) / right_span);
-        set_state_palette_level(led, &right_state, led_index_to_palette_index_linear(position), level);
+        set_state_palette_level(led, &right_state, led_index_to_palette_index_linear(palette_position), level);
     }
 }
 
@@ -1432,9 +1444,11 @@ static void light_render_task(void *arg)
     while (true) {
         light_state_t state;
         snapshot_light_state(&state);
-        render_frame(&state, frame++);
-        if (transmit_pixels() != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to flush frame to LED ring");
+        if (!(state.paused && state.on)) {
+            render_frame(&state, frame++);
+            if (transmit_pixels() != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to flush frame to LED ring");
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(effect_delay_ms(&state)));
     }
@@ -1504,6 +1518,146 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     }
 }
 
+static void build_ap_root_url(char *buffer, size_t length)
+{
+    if (s_ap_ip.addr != 0U) {
+        snprintf(buffer, length, "http://" IPSTR "/", IP2STR(&s_ap_ip));
+    } else {
+        strlcpy(buffer, "http://192.168.4.1/", length);
+    }
+}
+
+static size_t dns_question_end_offset(const uint8_t *packet, size_t length)
+{
+    size_t offset = 12U;
+    while (offset < length) {
+        uint8_t label_len = packet[offset++];
+        if (label_len == 0U) {
+            break;
+        }
+        if ((label_len & 0xC0U) != 0U || (offset + label_len) > length) {
+            return 0U;
+        }
+        offset += label_len;
+    }
+
+    if ((offset + 4U) > length) {
+        return 0U;
+    }
+    return offset + 4U;
+}
+
+static ssize_t build_dns_response_packet(const uint8_t *query, size_t query_len, uint8_t *response, size_t response_len)
+{
+    if (query_len < 12U || response_len < 12U) {
+        return -1;
+    }
+
+    uint16_t question_count = (uint16_t) ((query[4] << 8) | query[5]);
+    if (question_count == 0U) {
+        return -1;
+    }
+
+    size_t question_end = dns_question_end_offset(query, query_len);
+    if (question_end == 0U || question_end > response_len) {
+        return -1;
+    }
+
+    uint16_t question_type = (uint16_t) ((query[question_end - 4U] << 8) | query[question_end - 3U]);
+    bool answer_ipv4 = (question_type == 1U || question_type == 255U);
+
+    size_t required = question_end + (answer_ipv4 ? 16U : 0U);
+    if (required > response_len) {
+        return -1;
+    }
+
+    memcpy(response, query, question_end);
+    response[2] = 0x81;
+    response[3] = 0x80;
+    response[6] = 0x00;
+    response[7] = answer_ipv4 ? 0x01 : 0x00;
+    response[8] = 0x00;
+    response[9] = 0x00;
+    response[10] = 0x00;
+    response[11] = 0x00;
+
+    if (!answer_ipv4) {
+        return (ssize_t) question_end;
+    }
+
+    size_t offset = question_end;
+    response[offset++] = 0xC0;
+    response[offset++] = 0x0C;
+    response[offset++] = 0x00;
+    response[offset++] = 0x01;
+    response[offset++] = 0x00;
+    response[offset++] = 0x01;
+    response[offset++] = 0x00;
+    response[offset++] = 0x00;
+    response[offset++] = 0x00;
+    response[offset++] = 0x3C;
+    response[offset++] = 0x00;
+    response[offset++] = 0x04;
+    uint32_t ap_ip_host = ntohl(s_ap_ip.addr);
+    response[offset++] = (uint8_t) ((ap_ip_host >> 24) & 0xFFU);
+    response[offset++] = (uint8_t) ((ap_ip_host >> 16) & 0xFFU);
+    response[offset++] = (uint8_t) ((ap_ip_host >> 8) & 0xFFU);
+    response[offset++] = (uint8_t) (ap_ip_host & 0xFFU);
+
+    return (ssize_t) offset;
+}
+
+static void captive_dns_task(void *arg)
+{
+    (void) arg;
+
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "Captive DNS socket create failed: errno=%d", errno);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    struct sockaddr_in bind_addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(DNS_SERVER_PORT),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    if (bind(sock, (struct sockaddr *) &bind_addr, sizeof(bind_addr)) < 0) {
+        ESP_LOGE(TAG, "Captive DNS bind failed: errno=%d", errno);
+        lwip_close(sock);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Captive DNS ready on " IPSTR ":%d", IP2STR(&s_ap_ip), DNS_SERVER_PORT);
+
+    uint8_t query[DNS_PACKET_MAX_SIZE];
+    uint8_t response[DNS_PACKET_MAX_SIZE];
+    while (true) {
+        struct sockaddr_in source_addr;
+        socklen_t source_len = sizeof(source_addr);
+        ssize_t received = recvfrom(sock, query, sizeof(query), 0, (struct sockaddr *) &source_addr, &source_len);
+        if (received <= 0) {
+            continue;
+        }
+
+        ssize_t response_size = build_dns_response_packet(query, (size_t) received, response, sizeof(response));
+        if (response_size <= 0) {
+            continue;
+        }
+
+        sendto(sock, response, (size_t) response_size, 0, (struct sockaddr *) &source_addr, source_len);
+    }
+}
+
+static esp_err_t start_captive_dns_server(void)
+{
+    BaseType_t task_created = xTaskCreate(captive_dns_task, "captive_dns", 4096, NULL, 4, NULL);
+    ESP_RETURN_ON_FALSE(task_created == pdPASS, ESP_ERR_NO_MEM, TAG, "create captive dns task failed");
+    return ESP_OK;
+}
+
 static esp_err_t init_wifi(void)
 {
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "esp_netif_init failed");
@@ -1569,7 +1723,12 @@ static esp_err_t init_wifi(void)
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "disable Wi-Fi power save failed");
 
+    esp_netif_ip_info_t ap_ip_info;
+    ESP_RETURN_ON_ERROR(esp_netif_get_ip_info(ap_netif, &ap_ip_info), TAG, "read AP IP info failed");
+    s_ap_ip = ap_ip_info.ip;
+
     ESP_LOGI(TAG, "Access point ready: SSID=%s", s_ap_ssid);
+    ESP_LOGI(TAG, "Access point IP: " IPSTR, IP2STR(&s_ap_ip));
     return ESP_OK;
 }
 
@@ -1660,6 +1819,7 @@ static void apply_segment_json(cJSON *segment, light_state_t *state)
 static void apply_json_state(cJSON *root, light_state_t *state)
 {
     cJSON *on = cJSON_GetObjectItemCaseSensitive(root, "on");
+    cJSON *paused = cJSON_GetObjectItemCaseSensitive(root, "paused");
     cJSON *bri = cJSON_GetObjectItemCaseSensitive(root, "bri");
     cJSON *fx = cJSON_GetObjectItemCaseSensitive(root, "fx");
     cJSON *effect = cJSON_GetObjectItemCaseSensitive(root, "effect");
@@ -1677,6 +1837,9 @@ static void apply_json_state(cJSON *root, light_state_t *state)
 
     if (cJSON_IsBool(on)) {
         state->on = cJSON_IsTrue(on);
+    }
+    if (cJSON_IsBool(paused)) {
+        state->paused = cJSON_IsTrue(paused);
     }
     if (cJSON_IsNumber(bri)) {
         state->brightness = clamp_u8(bri->valueint);
@@ -1736,6 +1899,7 @@ static cJSON *build_state_json(void)
     cJSON *primary_color = cJSON_CreateArray();
 
     cJSON_AddBoolToObject(root, "on", state.on);
+    cJSON_AddBoolToObject(root, "paused", state.paused);
     cJSON_AddNumberToObject(root, "bri", state.brightness);
     cJSON_AddNumberToObject(root, "fx", state.effect);
     cJSON_AddNumberToObject(root, "speed", state.speed);
@@ -2135,6 +2299,73 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     return httpd_resp_send(req, INDEX_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
+static esp_err_t captive_redirect_handler(httpd_req_t *req)
+{
+    char portal_url[48];
+    build_ap_root_url(portal_url, sizeof(portal_url));
+
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", portal_url);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, "Redirecting to captive portal");
+}
+
+static esp_err_t captive_204_handler(httpd_req_t *req)
+{
+    char portal_url[48];
+    build_ap_root_url(portal_url, sizeof(portal_url));
+
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", portal_url);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, "Captive portal");
+}
+
+static esp_err_t captive_hotspot_detect_handler(httpd_req_t *req)
+{
+    char portal_url[48];
+    build_ap_root_url(portal_url, sizeof(portal_url));
+
+    set_common_response_headers(req, "text/html; charset=utf-8");
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_hdr(req, "Refresh", "0; url=/");
+
+    char body[192];
+    snprintf(body, sizeof(body),
+             "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>"
+             "Success <A HREF=\"%s\">Continue</A>."
+             "</BODY></HTML>",
+             portal_url);
+    return httpd_resp_sendstr(req, body);
+}
+
+static esp_err_t captive_generate_204_handler(httpd_req_t *req)
+{
+    return captive_204_handler(req);
+}
+
+static esp_err_t captive_ncsi_handler(httpd_req_t *req)
+{
+    return captive_redirect_handler(req);
+}
+
+static esp_err_t captive_connecttest_handler(httpd_req_t *req)
+{
+    return captive_redirect_handler(req);
+}
+
+static esp_err_t captive_mobile_connect_handler(httpd_req_t *req)
+{
+    return captive_redirect_handler(req);
+}
+
+static esp_err_t captive_root_fallback_handler(httpd_req_t *req)
+{
+    return captive_redirect_handler(req);
+}
+
 static esp_err_t json_info_get_handler(httpd_req_t *req)
 {
     cJSON *info = build_info_json();
@@ -2257,8 +2488,9 @@ static esp_err_t win_get_handler(httpd_req_t *req)
 static esp_err_t start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 24;
     config.stack_size = 8192;
+    config.uri_match_fn = httpd_uri_match_wildcard;
 
     ESP_RETURN_ON_ERROR(httpd_start(&s_http_server, &config), TAG, "httpd_start failed");
 
@@ -2297,6 +2529,41 @@ static esp_err_t start_http_server(void)
         .method = HTTP_GET,
         .handler = win_get_handler,
     };
+    const httpd_uri_t captive_hotspot_detect = {
+        .uri = "/hotspot-detect.html",
+        .method = HTTP_GET,
+        .handler = captive_hotspot_detect_handler,
+    };
+    const httpd_uri_t captive_generate_204 = {
+        .uri = "/generate_204",
+        .method = HTTP_GET,
+        .handler = captive_generate_204_handler,
+    };
+    const httpd_uri_t captive_gen_204 = {
+        .uri = "/gen_204",
+        .method = HTTP_GET,
+        .handler = captive_generate_204_handler,
+    };
+    const httpd_uri_t captive_ncsi = {
+        .uri = "/ncsi.txt",
+        .method = HTTP_GET,
+        .handler = captive_ncsi_handler,
+    };
+    const httpd_uri_t captive_connecttest = {
+        .uri = "/connecttest.txt",
+        .method = HTTP_GET,
+        .handler = captive_connecttest_handler,
+    };
+    const httpd_uri_t captive_mobile_connect = {
+        .uri = "/mobile/status.php",
+        .method = HTTP_GET,
+        .handler = captive_mobile_connect_handler,
+    };
+    const httpd_uri_t captive_root_fallback = {
+        .uri = "/*",
+        .method = HTTP_GET,
+        .handler = captive_root_fallback_handler,
+    };
 
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &root), TAG, "register root handler failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_info), TAG, "register info handler failed");
@@ -2305,6 +2572,13 @@ static esp_err_t start_http_server(void)
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_palettes_get), TAG, "register palettes GET handler failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_palettes_post), TAG, "register palettes POST handler failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &win), TAG, "register win handler failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &captive_hotspot_detect), TAG, "register captive hotspot handler failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &captive_generate_204), TAG, "register captive generate_204 handler failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &captive_gen_204), TAG, "register captive gen_204 handler failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &captive_ncsi), TAG, "register captive ncsi handler failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &captive_connecttest), TAG, "register captive connecttest handler failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &captive_mobile_connect), TAG, "register captive mobile status handler failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &captive_root_fallback), TAG, "register captive fallback handler failed");
 
     return ESP_OK;
 }
@@ -2334,7 +2608,8 @@ void app_main(void)
 
     ESP_ERROR_CHECK(init_led_strip());
     ESP_ERROR_CHECK(init_wifi());
+    ESP_ERROR_CHECK(start_captive_dns_server());
     ESP_ERROR_CHECK(start_http_server());
 
-    ESP_LOGI(TAG, "Control UI ready at http://192.168.4.1/");
+    ESP_LOGI(TAG, "Control UI ready at http://" IPSTR "/", IP2STR(&s_ap_ip));
 }
