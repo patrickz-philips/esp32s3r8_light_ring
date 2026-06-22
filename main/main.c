@@ -56,6 +56,7 @@ typedef enum {
     EFFECT_SCANNER,
     EFFECT_SPARKLE,
     EFFECT_SWOOSH,
+    EFFECT_SWOOSH_REVERSE,
     EFFECT_COUNT,
 } effect_id_t;
 
@@ -562,7 +563,7 @@ static const char INDEX_HTML[] =
     "          <div class=\"grid\">\n"
     "            <div><label for=\"color\">Primary Color</label><input id=\"color\" type=\"color\" value=\"#ff7810\"></div>\n"
     "            <div><label for=\"brightness\">Brightness</label><input id=\"brightness\" type=\"range\" min=\"0\" max=\"255\" value=\"160\"></div>\n"
-    "            <div><label for=\"effect\">Effect</label><select id=\"effect\"><option value=\"0\">Solid</option><option value=\"1\">Breathe</option><option value=\"2\">Rainbow</option><option value=\"3\">Chase</option><option value=\"4\">Color Wipe</option><option value=\"5\">Twinkle</option><option value=\"6\">Scanner</option><option value=\"7\">Sparkle</option><option value=\"8\">Swoosh</option></select></div>\n"
+    "            <div><label for=\"effect\">Effect</label><select id=\"effect\"><option value=\"0\">Solid</option><option value=\"1\">Breathe</option><option value=\"2\">Rainbow</option><option value=\"3\">Chase</option><option value=\"4\">Color Wipe</option><option value=\"5\">Twinkle</option><option value=\"6\">Scanner</option><option value=\"7\">Sparkle</option><option value=\"8\">Swoosh</option><option value=\"9\">Swoosh (Reverse)</option></select></div>\n"
     "            <div id=\"paletteRow\"><label for=\"palette\">Palette</label><select id=\"palette\"></select></div>\n"
     "            <div><label for=\"speed\">Speed</label><input id=\"speed\" type=\"range\" min=\"1\" max=\"255\" value=\"128\"></div>\n"
     "            <div id=\"swooshBgRow\" style=\"display:none\"><label for=\"swooshBgPalette\">Background Palette</label><select id=\"swooshBgPalette\"></select></div>\n"
@@ -706,7 +707,7 @@ static const char INDEX_HTML[] =
     "    const baseRenderStopEditor = renderStopEditor;\n"
     "    renderStopEditor = function() { baseRenderStopEditor(); stopList.querySelectorAll('[data-role=index]').forEach(input => { input.dataset.role = 'index-led'; input.min = '1'; input.max = String(ledCount); input.step = '1'; input.value = String(clampLedIndex(paletteIndexToLedIndex(input.value, editingPaletteCircle))); const container = input.parentElement; const label = container ? container.querySelector('.mini-label') : null; if (label) label.textContent = 'LED'; }); };\n"
     "    function startNewPalette() { const item = nextEmptyCustomPalette(); if (!item) { editorHint.textContent = 'All custom palette slots are already in use.'; return; } loadPaletteEditor(item.id); }\n"
-    "    function updateEffectControls() { const isSwoosh = Number(effectInput.value) === 8; paletteRow.style.display = isSwoosh ? 'none' : ''; swooshBgRow.style.display = isSwoosh ? '' : 'none'; swooshLeftRow.style.display = isSwoosh ? '' : 'none'; swooshRightRow.style.display = isSwoosh ? '' : 'none'; sideLengthRow.style.display = isSwoosh ? '' : 'none'; }\n"
+    "    function updateEffectControls() { const effectId = Number(effectInput.value); const isSwoosh = effectId === 8 || effectId === 9; paletteRow.style.display = isSwoosh ? 'none' : ''; swooshBgRow.style.display = isSwoosh ? '' : 'none'; swooshLeftRow.style.display = isSwoosh ? '' : 'none'; swooshRightRow.style.display = isSwoosh ? '' : 'none'; sideLengthRow.style.display = isSwoosh ? '' : 'none'; }\n"
     "    async function loadInfo() { const response = await fetch('/json/info'); const info = await response.json(); deviceInfo.textContent = `${info.name} | AP ${info.wifi.ap_ssid} | LEDs ${info.led.count} @ GPIO${info.led.gpio}`; }\n"
     "    async function loadPalettes() { const response = await fetch('/json/palettes'); const json = await response.json(); paletteCatalog = Array.isArray(json.items) ? json.items : []; renderPaletteSelect(); renderPaletteGallery(); if (editingPaletteId !== null) { loadPaletteEditor(editingPaletteId); } else { renderStopEditor(); } }\n"
     "    function updateSuspendButtonLabel() { suspendBtn.textContent = lastPaused ? 'Resume' : 'Suspend'; }\n"
@@ -760,6 +761,8 @@ static const char *effect_name(effect_id_t effect)
         return "sparkle";
     case EFFECT_SWOOSH:
         return "swoosh";
+    case EFFECT_SWOOSH_REVERSE:
+        return "swoosh_reverse";
     default:
         return "solid";
     }
@@ -860,6 +863,10 @@ static effect_id_t parse_effect_name(const char *value)
     }
     if (strcasecmp(value, "swoosh") == 0) {
         return EFFECT_SWOOSH;
+    }
+    if (strcasecmp(value, "swoosh_reverse") == 0 || strcasecmp(value, "swoosh reverse") == 0 ||
+        strcasecmp(value, "swoosh(reverse)") == 0 || strcasecmp(value, "reverse_swoosh") == 0) {
+        return EFFECT_SWOOSH_REVERSE;
     }
     return clamp_effect(atoi(value));
 }
@@ -1153,6 +1160,7 @@ static uint32_t effect_delay_ms(const light_state_t *state)
     case EFFECT_SPARKLE:
         return speed_to_delay(state->speed, 26U, 58U);
     case EFFECT_SWOOSH:
+    case EFFECT_SWOOSH_REVERSE:
         return speed_to_delay(state->speed, 40U, 180U);
     default:
         return 40U;
@@ -1385,6 +1393,41 @@ static void render_swoosh(const light_state_t *state, uint32_t frame)
     }
 }
 
+static void render_swoosh_reverse(const light_state_t *state, uint32_t frame)
+{
+    light_state_t background;
+    load_swoosh_palette_context(&background, state, state->swoosh_background_palette);
+
+    for (uint16_t index = 0; index < CONFIG_LIGHT_RING_LED_COUNT; ++index) {
+        set_state_pixel_level(index, &background, 255U);
+    }
+
+    uint8_t left_span = clamp_swoosh_span(state->swoosh_left_stops);
+    uint8_t right_span = clamp_swoosh_span(state->swoosh_right_stops);
+    uint8_t head = (uint8_t) ((frame * (1U + ((uint32_t) state->speed / 96U))) % SWOOSH_PATH_LENGTH);
+    light_state_t left_state;
+    light_state_t right_state;
+
+    load_swoosh_palette_context(&left_state, state, state->swoosh_left_palette);
+    load_swoosh_palette_context(&right_state, state, state->swoosh_right_palette);
+
+    for (uint8_t tail = 0; tail < left_span; ++tail) {
+        uint8_t position = (uint8_t) ((head + SWOOSH_PATH_LENGTH - tail) % SWOOSH_PATH_LENGTH);
+        uint8_t mirrored_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - position);
+        uint8_t led = swoosh_left_ring_index(mirrored_position);
+        uint8_t level = (uint8_t) (255U - ((uint16_t) tail * 196U) / left_span);
+        set_state_palette_level(led, &left_state, led_index_to_palette_index_linear(position), level);
+    }
+
+    for (uint8_t tail = 0; tail < right_span; ++tail) {
+        uint8_t position = (uint8_t) ((head + SWOOSH_PATH_LENGTH - tail) % SWOOSH_PATH_LENGTH);
+        uint8_t mirrored_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - position);
+        uint8_t led = swoosh_right_ring_index(mirrored_position);
+        uint8_t level = (uint8_t) (255U - ((uint16_t) tail * 196U) / right_span);
+        set_state_palette_level(led, &right_state, led_index_to_palette_index_linear(position), level);
+    }
+}
+
 static esp_err_t transmit_pixels(void)
 {
     const rmt_transmit_config_t tx_config = {
@@ -1429,6 +1472,9 @@ static void render_frame(const light_state_t *state, uint32_t frame)
         break;
     case EFFECT_SWOOSH:
         render_swoosh(state, frame);
+        break;
+    case EFFECT_SWOOSH_REVERSE:
+        render_swoosh_reverse(state, frame);
         break;
     default:
         render_solid(state);
