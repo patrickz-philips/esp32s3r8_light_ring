@@ -44,6 +44,10 @@
 #define SHRINK_BAR_COUNT            3U
 #define SHRINK_SEGMENT_LENGTH       (CONFIG_LIGHT_RING_LED_COUNT / SHRINK_BAR_COUNT)
 #define SHRINK_BAR_LENGTH           (SHRINK_SEGMENT_LENGTH)
+#define ROTATION_CORNER_COUNT       3U
+#define ROTATION_SEGMENT_LENGTH     (CONFIG_LIGHT_RING_LED_COUNT / ROTATION_CORNER_COUNT)
+#define ROTATION_MIN_LENGTH         2U
+#define ROTATION_MAX_LENGTH         (ROTATION_SEGMENT_LENGTH)
 #define DNS_SERVER_PORT             53
 #define DNS_PACKET_MAX_SIZE         512
 #define STRINGIFY_HELPER(value)     #value
@@ -61,6 +65,7 @@ typedef enum {
     EFFECT_SWOOSH,
     EFFECT_SWOOSH_REVERSE,
     EFFECT_SHRINK,
+    EFFECT_ROTATION,
     EFFECT_COUNT,
 } effect_id_t;
 
@@ -102,6 +107,11 @@ typedef struct {
     uint8_t shrink_bar_palette;
     uint8_t shrink_length;
     uint8_t shrink_gap;
+    uint8_t rotation_background_palette;
+    uint8_t rotation_palette;
+    uint8_t rotation_length;
+    uint8_t rotation_gap;
+    bool rotation_counterclockwise;
     bool has_palette_cache;
     uint8_t palette_stop_count;
     bool palette_circular;
@@ -275,6 +285,11 @@ static light_state_t s_light_state = {
     .shrink_bar_palette = 7,
     .shrink_length = 4,
     .shrink_gap = 6,
+    .rotation_background_palette = 0,
+    .rotation_palette = 7,
+    .rotation_length = 2,
+    .rotation_gap = 6,
+    .rotation_counterclockwise = false,
 };
 
 static uint8_t custom_palette_stop_count(const custom_palette_t *palette)
@@ -575,7 +590,7 @@ static const char INDEX_HTML[] =
     "          <div class=\"grid\">\n"
     "            <div><label for=\"color\">Primary Color</label><input id=\"color\" type=\"color\" value=\"#ff7810\"></div>\n"
     "            <div><label for=\"brightness\">Brightness</label><input id=\"brightness\" type=\"range\" min=\"0\" max=\"255\" value=\"160\"></div>\n"
-    "            <div><label for=\"effect\">Effect</label><select id=\"effect\"><option value=\"0\">Solid</option><option value=\"1\">Breathe</option><option value=\"2\">Rainbow</option><option value=\"3\">Chase</option><option value=\"4\">Color Wipe</option><option value=\"5\">Twinkle</option><option value=\"6\">Scanner</option><option value=\"7\">Sparkle</option><option value=\"8\">Swoosh</option><option value=\"9\">Swoosh (Reverse)</option><option value=\"10\">Shrink</option></select></div>\n"
+    "            <div><label for=\"effect\">Effect</label><select id=\"effect\"><option value=\"0\">Solid</option><option value=\"1\">Breathe</option><option value=\"2\">Rainbow</option><option value=\"3\">Chase</option><option value=\"4\">Color Wipe</option><option value=\"5\">Twinkle</option><option value=\"6\">Scanner</option><option value=\"7\">Sparkle</option><option value=\"8\">Swoosh</option><option value=\"9\">Swoosh (Reverse)</option><option value=\"10\">Shrink</option><option value=\"11\">Rotation</option></select></div>\n"
     "            <div id=\"paletteRow\"><label for=\"palette\">Palette</label><select id=\"palette\"></select></div>\n"
     "            <div><label for=\"speed\">Speed</label><input id=\"speed\" type=\"range\" min=\"1\" max=\"255\" value=\"128\"></div>\n"
     "            <div id=\"swooshBgRow\" style=\"display:none\"><label for=\"swooshBgPalette\">Background Palette</label><select id=\"swooshBgPalette\"></select></div>\n"
@@ -586,6 +601,11 @@ static const char INDEX_HTML[] =
     "            <div id=\"shrinkBarRow\" style=\"display:none\"><label for=\"shrinkBarPalette\">Bar Palette</label><select id=\"shrinkBarPalette\"></select></div>\n"
     "            <div id=\"shrinkLenRow\" style=\"display:none\"><label for=\"shrinkLength\">Shrink Length</label><input id=\"shrinkLength\" type=\"number\" min=\"1\" max=\"9\" value=\"4\"></div>\n"
     "            <div id=\"shrinkGapRow\" style=\"display:none\"><label for=\"shrinkGap\">Shrink Gap</label><input id=\"shrinkGap\" type=\"range\" min=\"0\" max=\"60\" value=\"6\"></div>\n"
+    "            <div id=\"rotationBgRow\" style=\"display:none\"><label for=\"rotationBgPalette\">Background Palette</label><select id=\"rotationBgPalette\"></select></div>\n"
+    "            <div id=\"rotationPaletteRow\" style=\"display:none\"><label for=\"rotationPalette\">Rotation Palette</label><select id=\"rotationPalette\"></select></div>\n"
+    "            <div id=\"rotationLenRow\" style=\"display:none\"><label for=\"rotationLength\">Rotation Length</label><input id=\"rotationLength\" type=\"number\" min=\"2\" max=\"9\" value=\"2\"></div>\n"
+    "            <div id=\"rotationGapRow\" style=\"display:none\"><label for=\"rotationGap\">Rotation Gap</label><input id=\"rotationGap\" type=\"range\" min=\"0\" max=\"60\" value=\"6\"></div>\n"
+    "            <div id=\"rotationCcwRow\" style=\"display:none\"><label for=\"rotationCcw\">Counterclockwise</label><input id=\"rotationCcw\" type=\"checkbox\"></div>\n"
     "          </div>\n"
     "          <div class=\"grid\">\n"
     "            <button id=\"applyBtn\">Apply State</button>\n"
@@ -664,6 +684,11 @@ static const char INDEX_HTML[] =
     "    const shrinkBarPaletteInput = document.getElementById('shrinkBarPalette');\n"
     "    const shrinkLenInput = document.getElementById('shrinkLength');\n"
     "    const shrinkGapInput = document.getElementById('shrinkGap');\n"
+    "    const rotationBgPaletteInput = document.getElementById('rotationBgPalette');\n"
+    "    const rotationPaletteInput = document.getElementById('rotationPalette');\n"
+    "    const rotationLenInput = document.getElementById('rotationLength');\n"
+    "    const rotationGapInput = document.getElementById('rotationGap');\n"
+    "    const rotationCcwInput = document.getElementById('rotationCcw');\n"
     "    const paletteRow = document.getElementById('paletteRow');\n"
     "    const swooshBgRow = document.getElementById('swooshBgRow');\n"
     "    const swooshLeftRow = document.getElementById('swooshLeftRow');\n"
@@ -673,6 +698,11 @@ static const char INDEX_HTML[] =
     "    const shrinkBarRow = document.getElementById('shrinkBarRow');\n"
     "    const shrinkLenRow = document.getElementById('shrinkLenRow');\n"
     "    const shrinkGapRow = document.getElementById('shrinkGapRow');\n"
+    "    const rotationBgRow = document.getElementById('rotationBgRow');\n"
+    "    const rotationPaletteRow = document.getElementById('rotationPaletteRow');\n"
+    "    const rotationLenRow = document.getElementById('rotationLenRow');\n"
+    "    const rotationGapRow = document.getElementById('rotationGapRow');\n"
+    "    const rotationCcwRow = document.getElementById('rotationCcwRow');\n"
     "    const suspendBtn = document.getElementById('suspendBtn');\n"
     "    const deviceInfo = document.getElementById('deviceInfo');\n"
     "    const paletteGallery = document.getElementById('paletteGallery');\n"
@@ -723,7 +753,7 @@ static const char INDEX_HTML[] =
     "    function closeColorDialog() { if (colorDialog && colorDialog.open) colorDialog.close(); editingColorIndex = null; }\n"
     "    function applyDialogColor() { if (editingColorIndex === null || !editingStops[editingColorIndex]) { closeColorDialog(); return; } editingStops[editingColorIndex].rgb = dialogRgb(); renderPreview(editorPreview, editingStops.map(stop => [stop.index, ...stop.rgb])); renderStopEditor(); closeColorDialog(); }\n"
     "    function renderPreview(target, colors) { if (!target) return; target.innerHTML = ''; (colors || []).forEach(entry => { const swatch = document.createElement('div'); const rgb = Array.isArray(entry) ? entry.slice(1,4) : entry.rgb; swatch.style.background = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`; target.appendChild(swatch); }); }\n"
-    "    function renderPaletteSelect() { if (!paletteInput || !swooshBgPaletteInput || !swooshLeftPaletteInput || !swooshRightPaletteInput) return; const current = String(selectedPaletteId); const options = paletteCatalog.filter(item => !item.empty).map(item => `<option value=\"${item.id}\">${item.name}</option>`).join(''); paletteInput.innerHTML = options; swooshBgPaletteInput.innerHTML = options; swooshLeftPaletteInput.innerHTML = options; swooshRightPaletteInput.innerHTML = options; if (shrinkBgPaletteInput) shrinkBgPaletteInput.innerHTML = options; if (shrinkBarPaletteInput) shrinkBarPaletteInput.innerHTML = options; if ([...paletteInput.options].some(option => option.value === current)) paletteInput.value = current; }\n"
+    "    function renderPaletteSelect() { if (!paletteInput || !swooshBgPaletteInput || !swooshLeftPaletteInput || !swooshRightPaletteInput) return; const current = String(selectedPaletteId); const options = paletteCatalog.filter(item => !item.empty).map(item => `<option value=\"${item.id}\">${item.name}</option>`).join(''); paletteInput.innerHTML = options; swooshBgPaletteInput.innerHTML = options; swooshLeftPaletteInput.innerHTML = options; swooshRightPaletteInput.innerHTML = options; if (shrinkBgPaletteInput) shrinkBgPaletteInput.innerHTML = options; if (shrinkBarPaletteInput) shrinkBarPaletteInput.innerHTML = options; if (rotationBgPaletteInput) rotationBgPaletteInput.innerHTML = options; if (rotationPaletteInput) rotationPaletteInput.innerHTML = options; if ([...paletteInput.options].some(option => option.value === current)) paletteInput.value = current; }\n"
     "    function activatePaletteCard(id) { if (!paletteGallery) return; [...paletteGallery.children].forEach(card => card.classList.toggle('active', Number(card.dataset.id) === Number(id))); }\n"
     "    function renderStopEditor() { if (!stopList || !editorPreview || !editorHint || !customPaletteName || !circlePaletteInput) return; stopList.innerHTML = ''; const current = paletteCatalog.find(item => Number(item.id) === Number(editingPaletteId)); if (!current) { editorHint.textContent = 'Select a custom palette card or create a new one.'; customPaletteName.value = ''; circlePaletteInput.checked = false; circlePaletteInput.disabled = true; renderPreview(editorPreview, []); return; } circlePaletteInput.disabled = false; circlePaletteInput.checked = editingPaletteCircle; const flowHint = editingPaletteCircle ? 'Circle mode wraps LED 27 back to LED 1.' : 'Linear mode clamps the two ends.'; editorHint.textContent = current.empty ? `Creating ${current.name}. Give it a name and tune its color stops. ${flowHint}` : `Editing custom palette ${current.name}. Stops are saved as WLED-style [index,r,g,b] entries. ${flowHint}`; if (!current.empty && customPaletteName.value === '') customPaletteName.value = current.name; const previewColors = previewColorsFromStops(editingStops, editingPaletteCircle); renderPreview(editorPreview, previewColors.length ? previewColors : (current.colors || [])); editingStops.forEach((stop, index) => { const row = document.createElement('div'); row.className = 'stop-row'; row.innerHTML = `<div><div class=\"mini-label\">Index</div><input type=\"number\" min=\"0\" max=\"255\" value=\"${stop.index}\" data-role=\"index\" data-index=\"${index}\"></div><div><div class=\"mini-label\">Color</div><button type=\"button\" class=\"color-chip\" style=\"background:${rgbToHex(stop.rgb)}\" data-role=\"edit-color\" data-index=\"${index}\" aria-label=\"Edit stop color ${index + 1}\"></button></div><button type=\"button\" class=\"ghost\" data-role=\"remove\" data-index=\"${index}\">Remove</button>`; stopList.appendChild(row); }); }\n"
     "    function renderPaletteGallery() { if (!paletteGallery) return; paletteGallery.innerHTML = ''; paletteCatalog.filter(item => !item.empty).forEach(item => { const card = document.createElement('button'); card.type = 'button'; card.className = `palette-card${item.editable ? ' editable' : ''}${Number(item.id) === Number(selectedPaletteId) ? ' active' : ''}`; card.dataset.id = item.id; const preview = document.createElement('div'); preview.className = 'palette-preview'; (item.colors || []).forEach(entry => { const swatch = document.createElement('div'); const rgb = Array.isArray(entry) ? entry.slice(1,4) : entry.rgb; swatch.style.background = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`; preview.appendChild(swatch); }); const meta = document.createElement('div'); meta.className = 'palette-meta'; meta.innerHTML = `<strong>${item.name}</strong><span>${item.editable ? 'Custom editable palette' : 'Built-in palette'}</span>`; card.append(preview, meta); card.addEventListener('click', () => { selectedPaletteId = Number(item.id); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); if (item.editable) { loadPaletteEditor(item.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } }); paletteGallery.appendChild(card); }); if (newPaletteBtn) { const next = nextEmptyCustomPalette(); newPaletteBtn.disabled = !next; newPaletteBtn.textContent = next ? 'New Custom Palette' : 'Custom Slots Full'; } }\n"
@@ -731,12 +761,12 @@ static const char INDEX_HTML[] =
     "    const baseRenderStopEditor = renderStopEditor;\n"
     "    renderStopEditor = function() { baseRenderStopEditor(); stopList.querySelectorAll('[data-role=index]').forEach(input => { input.dataset.role = 'index-led'; input.min = '1'; input.max = String(ledCount); input.step = '1'; input.value = String(clampLedIndex(paletteIndexToLedIndex(input.value, editingPaletteCircle))); const container = input.parentElement; const label = container ? container.querySelector('.mini-label') : null; if (label) label.textContent = 'LED'; }); };\n"
     "    function startNewPalette() { const item = nextEmptyCustomPalette(); if (!item) { editorHint.textContent = 'All custom palette slots are already in use.'; return; } loadPaletteEditor(item.id); }\n"
-    "    function updateEffectControls() { const effectId = Number(effectInput.value); const isSwoosh = effectId === 8 || effectId === 9; const isShrink = effectId === 10; paletteRow.style.display = (isSwoosh || isShrink) ? 'none' : ''; swooshBgRow.style.display = isSwoosh ? '' : 'none'; swooshLeftRow.style.display = isSwoosh ? '' : 'none'; swooshRightRow.style.display = isSwoosh ? '' : 'none'; sideLengthRow.style.display = isSwoosh ? '' : 'none'; shrinkBgRow.style.display = isShrink ? '' : 'none'; shrinkBarRow.style.display = isShrink ? '' : 'none'; shrinkLenRow.style.display = isShrink ? '' : 'none'; shrinkGapRow.style.display = isShrink ? '' : 'none'; }\n"
+    "    function updateEffectControls() { const effectId = Number(effectInput.value); const isSwoosh = effectId === 8 || effectId === 9; const isShrink = effectId === 10; const isRotation = effectId === 11; paletteRow.style.display = (isSwoosh || isShrink || isRotation) ? 'none' : ''; swooshBgRow.style.display = isSwoosh ? '' : 'none'; swooshLeftRow.style.display = isSwoosh ? '' : 'none'; swooshRightRow.style.display = isSwoosh ? '' : 'none'; sideLengthRow.style.display = isSwoosh ? '' : 'none'; shrinkBgRow.style.display = isShrink ? '' : 'none'; shrinkBarRow.style.display = isShrink ? '' : 'none'; shrinkLenRow.style.display = isShrink ? '' : 'none'; shrinkGapRow.style.display = isShrink ? '' : 'none'; if (rotationBgRow) rotationBgRow.style.display = isRotation ? '' : 'none'; if (rotationPaletteRow) rotationPaletteRow.style.display = isRotation ? '' : 'none'; if (rotationLenRow) rotationLenRow.style.display = isRotation ? '' : 'none'; if (rotationGapRow) rotationGapRow.style.display = isRotation ? '' : 'none'; if (rotationCcwRow) rotationCcwRow.style.display = isRotation ? '' : 'none'; }\n"
     "    async function loadInfo() { const response = await fetch('/json/info'); const info = await response.json(); deviceInfo.textContent = `${info.name} | AP ${info.wifi.ap_ssid} | LEDs ${info.led.count} @ GPIO${info.led.gpio}`; }\n"
     "    async function loadPalettes() { const response = await fetch('/json/palettes'); const json = await response.json(); paletteCatalog = Array.isArray(json.items) ? json.items : []; renderPaletteSelect(); renderPaletteGallery(); if (editingPaletteId !== null) { loadPaletteEditor(editingPaletteId); } else { renderStopEditor(); } }\n"
     "    function updateSuspendButtonLabel() { suspendBtn.textContent = lastPaused ? 'Resume' : 'Suspend'; }\n"
-    "    async function loadState() { const response = await fetch('/json/state'); const state = await response.json(); const seg = state.seg && state.seg[0] ? state.seg[0] : {}; const color = seg.col && seg.col[0] ? seg.col[0] : state.color; lastOn = !!state.on; lastPaused = !!state.paused; selectedPaletteId = Number(seg.pal ?? state.pal ?? state.palette ?? 0); updateSuspendButtonLabel(); brightnessInput.value = state.bri ?? 0; speedInput.value = seg.sx ?? state.speed ?? 128; effectInput.value = seg.fx ?? state.fx ?? 0; swooshBgPaletteInput.value = String(seg.bgPal ?? state.bgPal ?? 0); swooshLeftPaletteInput.value = String(seg.leftPal ?? state.leftPal ?? 0); swooshRightPaletteInput.value = String(seg.rightPal ?? state.rightPal ?? 0); sideLengthInput.value = String(seg.leftStops ?? state.leftStops ?? 5); if (shrinkBgPaletteInput) shrinkBgPaletteInput.value = String(seg.shrinkBg ?? state.shrinkBg ?? 0); if (shrinkBarPaletteInput) shrinkBarPaletteInput.value = String(seg.shrinkBar ?? state.shrinkBar ?? 0); if (shrinkLenInput) shrinkLenInput.value = String(seg.shrinkLen ?? state.shrinkLen ?? 4); if (shrinkGapInput) shrinkGapInput.value = String(seg.shrinkGap ?? state.shrinkGap ?? 6); updateEffectControls(); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { if (editingPaletteId !== selected.id) loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } if (Array.isArray(color)) { colorInput.value = rgbToHex(color); } }\n"
-    "    async function applyState() { const [r, g, b] = hexToRgb(colorInput.value); const payload = { on: true, paused: false, bri: Number(brightnessInput.value), color: [r, g, b], effect: Number(effectInput.value), speed: Number(speedInput.value), palette: Number(paletteInput.value), bgPal: Number(swooshBgPaletteInput.value), leftPal: Number(swooshLeftPaletteInput.value), rightPal: Number(swooshRightPaletteInput.value), leftStops: Number(sideLengthInput.value), rightStops: Number(sideLengthInput.value), shrinkBg: Number(shrinkBgPaletteInput.value), shrinkBar: Number(shrinkBarPaletteInput.value), shrinkLen: Number(shrinkLenInput.value), shrinkGap: Number(shrinkGapInput.value) }; await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
+    "    async function loadState() { const response = await fetch('/json/state'); const state = await response.json(); const seg = state.seg && state.seg[0] ? state.seg[0] : {}; const color = seg.col && seg.col[0] ? seg.col[0] : state.color; lastOn = !!state.on; lastPaused = !!state.paused; selectedPaletteId = Number(seg.pal ?? state.pal ?? state.palette ?? 0); updateSuspendButtonLabel(); brightnessInput.value = state.bri ?? 0; speedInput.value = seg.sx ?? state.speed ?? 128; effectInput.value = seg.fx ?? state.fx ?? 0; swooshBgPaletteInput.value = String(seg.bgPal ?? state.bgPal ?? 0); swooshLeftPaletteInput.value = String(seg.leftPal ?? state.leftPal ?? 0); swooshRightPaletteInput.value = String(seg.rightPal ?? state.rightPal ?? 0); sideLengthInput.value = String(seg.leftStops ?? state.leftStops ?? 5); if (shrinkBgPaletteInput) shrinkBgPaletteInput.value = String(seg.shrinkBg ?? state.shrinkBg ?? 0); if (shrinkBarPaletteInput) shrinkBarPaletteInput.value = String(seg.shrinkBar ?? state.shrinkBar ?? 0); if (shrinkLenInput) shrinkLenInput.value = String(seg.shrinkLen ?? state.shrinkLen ?? 4); if (shrinkGapInput) shrinkGapInput.value = String(seg.shrinkGap ?? state.shrinkGap ?? 6); if (rotationBgPaletteInput) rotationBgPaletteInput.value = String(seg.rotBg ?? state.rotBg ?? 0); if (rotationPaletteInput) rotationPaletteInput.value = String(seg.rotPal ?? state.rotPal ?? 0); if (rotationLenInput) rotationLenInput.value = String(seg.rotLen ?? state.rotLen ?? 2); if (rotationGapInput) rotationGapInput.value = String(seg.rotGap ?? state.rotGap ?? 6); if (rotationCcwInput) rotationCcwInput.checked = !!(seg.rotCcw ?? state.rotCcw ?? false); updateEffectControls(); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { if (editingPaletteId !== selected.id) loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } if (Array.isArray(color)) { colorInput.value = rgbToHex(color); } }\n"
+    "    async function applyState() { const [r, g, b] = hexToRgb(colorInput.value); const payload = { on: true, paused: false, bri: Number(brightnessInput.value), color: [r, g, b], effect: Number(effectInput.value), speed: Number(speedInput.value), palette: Number(paletteInput.value), bgPal: Number(swooshBgPaletteInput.value), leftPal: Number(swooshLeftPaletteInput.value), rightPal: Number(swooshRightPaletteInput.value), leftStops: Number(sideLengthInput.value), rightStops: Number(sideLengthInput.value), shrinkBg: Number(shrinkBgPaletteInput.value), shrinkBar: Number(shrinkBarPaletteInput.value), shrinkLen: Number(shrinkLenInput.value), shrinkGap: Number(shrinkGapInput.value), rotBg: Number(rotationBgPaletteInput.value), rotPal: Number(rotationPaletteInput.value), rotLen: Number(rotationLenInput.value), rotGap: Number(rotationGapInput.value), rotCcw: !!rotationCcwInput.checked }; await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
     "    async function savePalette() { if (editingPaletteId === null) { editorHint.textContent = 'Select a custom palette before saving.'; return; } if (!editingStops.length) { editorHint.textContent = 'Add at least one color stop before saving.'; return; } const payload = { id: Number(editingPaletteId), name: customPaletteName.value.trim() || 'Custom Palette', circle: !!circlePaletteInput.checked, stops: editingStops.map(stop => [Number(stop.index), ...stop.rgb]) }; await fetch('/json/palettes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadPalettes(); await loadState(); loadPaletteEditor(editingPaletteId); }\n"
     "    document.getElementById('applyBtn').addEventListener('click', applyState);\n"
     "    document.getElementById('refreshBtn').addEventListener('click', loadState);\n"
@@ -789,6 +819,8 @@ static const char *effect_name(effect_id_t effect)
         return "swoosh_reverse";
     case EFFECT_SHRINK:
         return "shrink";
+    case EFFECT_ROTATION:
+        return "rotation";
     default:
         return "solid";
     }
@@ -897,6 +929,9 @@ static effect_id_t parse_effect_name(const char *value)
     if (strcasecmp(value, "shrink") == 0) {
         return EFFECT_SHRINK;
     }
+    if (strcasecmp(value, "rotation") == 0 || strcasecmp(value, "rotate") == 0) {
+        return EFFECT_ROTATION;
+    }
     return clamp_effect(atoi(value));
 }
 
@@ -928,6 +963,28 @@ static uint8_t clamp_shrink_length(int value)
 }
 
 static uint8_t clamp_shrink_gap(int value)
+{
+    if (value < 0) {
+        return 0U;
+    }
+    if (value > 60) {
+        return 60U;
+    }
+    return (uint8_t) value;
+}
+
+static uint8_t clamp_rotation_length(int value)
+{
+    if (value < (int) ROTATION_MIN_LENGTH) {
+        return (uint8_t) ROTATION_MIN_LENGTH;
+    }
+    if (value > (int) ROTATION_MAX_LENGTH) {
+        return (uint8_t) ROTATION_MAX_LENGTH;
+    }
+    return (uint8_t) value;
+}
+
+static uint8_t clamp_rotation_gap(int value)
 {
     if (value < 0) {
         return 0U;
@@ -1214,6 +1271,8 @@ static uint32_t effect_delay_ms(const light_state_t *state)
     case EFFECT_SWOOSH_REVERSE:
         return speed_to_delay(state->speed, 40U, 180U);
     case EFFECT_SHRINK:
+        return speed_to_delay(state->speed, 30U, 360U);
+    case EFFECT_ROTATION:
         return speed_to_delay(state->speed, 30U, 360U);
     default:
         return 40U;
@@ -1535,6 +1594,76 @@ static void render_shrink(const light_state_t *state, uint32_t frame)
     }
 }
 
+static void render_rotation(const light_state_t *state, uint32_t frame)
+{
+    light_state_t background;
+    light_state_t rotation;
+    load_swoosh_palette_context(&background, state, state->rotation_background_palette);
+    load_swoosh_palette_context(&rotation, state, state->rotation_palette);
+
+    const uint16_t led_count = CONFIG_LIGHT_RING_LED_COUNT;
+    uint8_t base_len = clamp_rotation_length(state->rotation_length);
+    if (base_len > (uint8_t) ROTATION_SEGMENT_LENGTH) {
+        base_len = (uint8_t) ROTATION_SEGMENT_LENGTH;
+    }
+
+    /* Paint the whole ring with the background palette first; the rotation
+       blocks are drawn on top of it. */
+    for (uint16_t index = 0; index < led_count; ++index) {
+        set_state_pixel_level(index, &background, 255U);
+    }
+
+    /* The three corner blocks grow from base_len up to a full segment so they
+       eventually cover every background pixel, then restore back to base_len.
+       The rotation gap holds the blocks paused at both extremes. */
+    uint8_t grow_range = (uint8_t) (ROTATION_SEGMENT_LENGTH - base_len);
+    uint8_t grow = 0U;
+    if (grow_range > 0U) {
+        uint32_t gap = clamp_rotation_gap(state->rotation_gap);
+        uint32_t cycle = ((uint32_t) grow_range * 2U) + (gap * 2U);
+        uint32_t phase = frame % cycle;
+        if (phase < grow_range) {
+            grow = (uint8_t) phase;                                          /* expanding */
+        } else if (phase < ((uint32_t) grow_range + gap)) {
+            grow = grow_range;                                               /* hold covered */
+        } else if (phase < (((uint32_t) grow_range * 2U) + gap)) {
+            grow = (uint8_t) (((uint32_t) grow_range * 2U) + gap - phase);   /* restoring */
+        } else {
+            grow = 0U;                                                       /* hold at base */
+        }
+    }
+
+    uint8_t active_len = (uint8_t) (base_len + grow);
+
+    for (uint8_t corner = 0; corner < ROTATION_CORNER_COUNT; ++corner) {
+        /* The corner pairs sit at LEDs {hi-1, hi} where hi matches the segment
+           boundary (8, 17, 26 on a 27-LED ring). The base block of base_len
+           pixels expands symmetrically around that pair. */
+        uint16_t hi = (uint16_t) (((uint16_t) (ROTATION_SEGMENT_LENGTH * (corner + 1U)) - 1U) % led_count);
+        uint8_t extra = (uint8_t) (base_len - ROTATION_MIN_LENGTH);
+        uint8_t left_extra = (uint8_t) (extra / 2U);
+        uint16_t base_left = (uint16_t) ((hi + led_count - 1U - left_extra) % led_count);
+        uint16_t base_right = (uint16_t) ((hi + (base_len - 2U - left_extra)) % led_count);
+
+        uint16_t start;
+        if (!state->rotation_counterclockwise) {
+            /* Clockwise: anchor the left edge and grow toward higher indices. */
+            start = base_left;
+        } else {
+            /* Counterclockwise: anchor the right edge and grow toward lower indices. */
+            start = (uint16_t) ((base_right + led_count + 1U - active_len) % led_count);
+        }
+
+        for (uint8_t pos = 0; pos < active_len; ++pos) {
+            uint16_t led = (uint16_t) ((start + pos) % led_count);
+            uint8_t palette_index = (active_len > 1U)
+                                        ? (uint8_t) (((uint16_t) pos * 255U) / (active_len - 1U))
+                                        : 0U;
+            set_state_palette_level(led, &rotation, palette_index, 255U);
+        }
+    }
+}
+
 static esp_err_t transmit_pixels(void)
 {
     const rmt_transmit_config_t tx_config = {
@@ -1585,6 +1714,9 @@ static void render_frame(const light_state_t *state, uint32_t frame)
         break;
     case EFFECT_SHRINK:
         render_shrink(state, frame);
+        break;
+    case EFFECT_ROTATION:
+        render_rotation(state, frame);
         break;
     default:
         render_solid(state);
@@ -1941,6 +2073,11 @@ static void apply_segment_json(cJSON *segment, light_state_t *state)
     cJSON *shrink_bar = cJSON_GetObjectItemCaseSensitive(segment, "shrinkBar");
     cJSON *shrink_len = cJSON_GetObjectItemCaseSensitive(segment, "shrinkLen");
     cJSON *shrink_gap = cJSON_GetObjectItemCaseSensitive(segment, "shrinkGap");
+    cJSON *rot_bg = cJSON_GetObjectItemCaseSensitive(segment, "rotBg");
+    cJSON *rot_pal = cJSON_GetObjectItemCaseSensitive(segment, "rotPal");
+    cJSON *rot_len = cJSON_GetObjectItemCaseSensitive(segment, "rotLen");
+    cJSON *rot_gap = cJSON_GetObjectItemCaseSensitive(segment, "rotGap");
+    cJSON *rot_ccw = cJSON_GetObjectItemCaseSensitive(segment, "rotCcw");
     cJSON *on = cJSON_GetObjectItemCaseSensitive(segment, "on");
     cJSON *colors = cJSON_GetObjectItemCaseSensitive(segment, "col");
 
@@ -1980,6 +2117,21 @@ static void apply_segment_json(cJSON *segment, light_state_t *state)
     if (cJSON_IsNumber(shrink_gap)) {
         state->shrink_gap = clamp_shrink_gap(shrink_gap->valueint);
     }
+    if (cJSON_IsNumber(rot_bg)) {
+        state->rotation_background_palette = clamp_palette(rot_bg->valueint);
+    }
+    if (cJSON_IsNumber(rot_pal)) {
+        state->rotation_palette = clamp_palette(rot_pal->valueint);
+    }
+    if (cJSON_IsNumber(rot_len)) {
+        state->rotation_length = clamp_rotation_length(rot_len->valueint);
+    }
+    if (cJSON_IsNumber(rot_gap)) {
+        state->rotation_gap = clamp_rotation_gap(rot_gap->valueint);
+    }
+    if (cJSON_IsBool(rot_ccw)) {
+        state->rotation_counterclockwise = cJSON_IsTrue(rot_ccw);
+    }
     if (cJSON_IsBool(on)) {
         state->on = cJSON_IsTrue(on);
     }
@@ -2008,6 +2160,11 @@ static void apply_json_state(cJSON *root, light_state_t *state)
     cJSON *shrink_bar = cJSON_GetObjectItemCaseSensitive(root, "shrinkBar");
     cJSON *shrink_len = cJSON_GetObjectItemCaseSensitive(root, "shrinkLen");
     cJSON *shrink_gap = cJSON_GetObjectItemCaseSensitive(root, "shrinkGap");
+    cJSON *rot_bg = cJSON_GetObjectItemCaseSensitive(root, "rotBg");
+    cJSON *rot_pal = cJSON_GetObjectItemCaseSensitive(root, "rotPal");
+    cJSON *rot_len = cJSON_GetObjectItemCaseSensitive(root, "rotLen");
+    cJSON *rot_gap = cJSON_GetObjectItemCaseSensitive(root, "rotGap");
+    cJSON *rot_ccw = cJSON_GetObjectItemCaseSensitive(root, "rotCcw");
     cJSON *color = cJSON_GetObjectItemCaseSensitive(root, "color");
     cJSON *segments = cJSON_GetObjectItemCaseSensitive(root, "seg");
 
@@ -2067,6 +2224,21 @@ static void apply_json_state(cJSON *root, light_state_t *state)
     if (cJSON_IsNumber(shrink_gap)) {
         state->shrink_gap = clamp_shrink_gap(shrink_gap->valueint);
     }
+    if (cJSON_IsNumber(rot_bg)) {
+        state->rotation_background_palette = clamp_palette(rot_bg->valueint);
+    }
+    if (cJSON_IsNumber(rot_pal)) {
+        state->rotation_palette = clamp_palette(rot_pal->valueint);
+    }
+    if (cJSON_IsNumber(rot_len)) {
+        state->rotation_length = clamp_rotation_length(rot_len->valueint);
+    }
+    if (cJSON_IsNumber(rot_gap)) {
+        state->rotation_gap = clamp_rotation_gap(rot_gap->valueint);
+    }
+    if (cJSON_IsBool(rot_ccw)) {
+        state->rotation_counterclockwise = cJSON_IsTrue(rot_ccw);
+    }
     apply_color_array(color, state);
 
     if (cJSON_IsArray(segments) && cJSON_GetArraySize(segments) > 0) {
@@ -2102,6 +2274,11 @@ static cJSON *build_state_json(void)
     cJSON_AddNumberToObject(root, "shrinkBar", state.shrink_bar_palette);
     cJSON_AddNumberToObject(root, "shrinkLen", state.shrink_length);
     cJSON_AddNumberToObject(root, "shrinkGap", state.shrink_gap);
+    cJSON_AddNumberToObject(root, "rotBg", state.rotation_background_palette);
+    cJSON_AddNumberToObject(root, "rotPal", state.rotation_palette);
+    cJSON_AddNumberToObject(root, "rotLen", state.rotation_length);
+    cJSON_AddNumberToObject(root, "rotGap", state.rotation_gap);
+    cJSON_AddBoolToObject(root, "rotCcw", state.rotation_counterclockwise);
     cJSON_AddStringToObject(root, "effectName", effect_name((effect_id_t) state.effect));
     cJSON_AddStringToObject(root, "paletteName", state.palette_label[0] != '\0' ? state.palette_label : palette_name(state.palette));
 
@@ -2124,6 +2301,11 @@ static cJSON *build_state_json(void)
     cJSON_AddNumberToObject(segment, "shrinkBar", state.shrink_bar_palette);
     cJSON_AddNumberToObject(segment, "shrinkLen", state.shrink_length);
     cJSON_AddNumberToObject(segment, "shrinkGap", state.shrink_gap);
+    cJSON_AddNumberToObject(segment, "rotBg", state.rotation_background_palette);
+    cJSON_AddNumberToObject(segment, "rotPal", state.rotation_palette);
+    cJSON_AddNumberToObject(segment, "rotLen", state.rotation_length);
+    cJSON_AddNumberToObject(segment, "rotGap", state.rotation_gap);
+    cJSON_AddBoolToObject(segment, "rotCcw", state.rotation_counterclockwise);
 
     cJSON_AddItemToArray(primary_color, cJSON_CreateNumber(state.red));
     cJSON_AddItemToArray(primary_color, cJSON_CreateNumber(state.green));
