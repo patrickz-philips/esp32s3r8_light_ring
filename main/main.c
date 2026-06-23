@@ -52,6 +52,9 @@
 #define POINT_ARM_LENGTH            (CONFIG_LIGHT_RING_LED_COUNT - 1U - POINT_APEX)
 #define POINT_MIN_REPEAT            1U
 #define POINT_MAX_REPEAT            3U
+#define EDGE_MAX_LENGTH            (CONFIG_LIGHT_RING_LED_COUNT)
+#define EDGE_MIN_REPEAT            1U
+#define EDGE_MAX_REPEAT            3U
 #define DNS_SERVER_PORT             53
 #define DNS_PACKET_MAX_SIZE         512
 #define STRINGIFY_HELPER(value)     #value
@@ -71,6 +74,7 @@ typedef enum {
     EFFECT_SHRINK,
     EFFECT_ROTATION,
     EFFECT_POINT,
+    EFFECT_BREATHE_EDGE,
     EFFECT_COUNT,
 } effect_id_t;
 
@@ -123,6 +127,10 @@ typedef struct {
     uint8_t point_total_length;
     uint8_t point_repeat;
     uint8_t point_gap;
+    uint8_t edge_palette;
+    uint8_t edge_length;
+    uint8_t edge_repeat;
+    uint8_t edge_gap;
     bool has_palette_cache;
     uint8_t palette_stop_count;
     bool palette_circular;
@@ -307,6 +315,10 @@ static light_state_t s_light_state = {
     .point_total_length = 14,
     .point_repeat = 1,
     .point_gap = 8,
+    .edge_palette = 7,
+    .edge_length = 2,
+    .edge_repeat = 1,
+    .edge_gap = 8,
 };
 
 static uint8_t custom_palette_stop_count(const custom_palette_t *palette)
@@ -607,7 +619,7 @@ static const char INDEX_HTML[] =
     "          <div class=\"grid\">\n"
     "            <div><label for=\"color\">Primary Color</label><input id=\"color\" type=\"color\" value=\"#ff7810\"></div>\n"
     "            <div><label for=\"brightness\">Brightness</label><input id=\"brightness\" type=\"range\" min=\"0\" max=\"255\" value=\"160\"></div>\n"
-    "            <div><label for=\"effect\">Effect</label><select id=\"effect\"><option value=\"0\">Solid</option><option value=\"1\">Breathe</option><option value=\"2\">Rainbow</option><option value=\"3\">Chase</option><option value=\"4\">Color Wipe</option><option value=\"5\">Twinkle</option><option value=\"6\">Scanner</option><option value=\"7\">Sparkle</option><option value=\"8\">Swoosh</option><option value=\"9\">Swoosh (Reverse)</option><option value=\"10\">Shrink</option><option value=\"11\">Rotation</option><option value=\"12\">Point</option></select></div>\n"
+    "            <div><label for=\"effect\">Effect</label><select id=\"effect\"><option value=\"0\">Solid</option><option value=\"1\">Breathe</option><option value=\"2\">Rainbow</option><option value=\"3\">Chase</option><option value=\"4\">Color Wipe</option><option value=\"5\">Twinkle</option><option value=\"6\">Scanner</option><option value=\"7\">Sparkle</option><option value=\"8\">Swoosh</option><option value=\"9\">Swoosh (Reverse)</option><option value=\"10\">Shrink</option><option value=\"11\">Rotation</option><option value=\"12\">Point</option><option value=\"13\">Breathe Edge</option></select></div>\n"
     "            <div id=\"paletteRow\"><label for=\"palette\">Palette</label><select id=\"palette\"></select></div>\n"
     "            <div><label for=\"speed\">Speed</label><input id=\"speed\" type=\"range\" min=\"1\" max=\"255\" value=\"128\"></div>\n"
     "            <div id=\"swooshBgRow\" style=\"display:none\"><label for=\"swooshBgPalette\">Background Palette</label><select id=\"swooshBgPalette\"></select></div>\n"
@@ -629,6 +641,10 @@ static const char INDEX_HTML[] =
     "            <div id=\"pointTotalRow\" style=\"display:none\"><label for=\"pointTotal\">Total Length</label><input id=\"pointTotal\" type=\"number\" min=\"1\" max=\"14\" value=\"14\"></div>\n"
     "            <div id=\"pointModeRow\" style=\"display:none\"><label for=\"pointMode\">Repeat</label><select id=\"pointMode\"><option value=\"1\">Single</option><option value=\"2\">Double</option><option value=\"3\">Triple</option></select></div>\n"
     "            <div id=\"pointGapRow\" style=\"display:none\"><label for=\"pointGap\">Gap</label><input id=\"pointGap\" type=\"range\" min=\"0\" max=\"60\" value=\"8\"></div>\n"
+    "            <div id=\"edgePaletteRow\" style=\"display:none\"><label for=\"edgePalette\">Edge Palette</label><select id=\"edgePalette\"></select></div>\n"
+    "            <div id=\"edgeLenRow\" style=\"display:none\"><label for=\"edgeLength\">Edge Length</label><input id=\"edgeLength\" type=\"number\" min=\"1\" max=\"27\" value=\"2\"></div>\n"
+    "            <div id=\"edgeModeRow\" style=\"display:none\"><label for=\"edgeMode\">Repeat</label><select id=\"edgeMode\"><option value=\"1\">Single</option><option value=\"2\">Double</option><option value=\"3\">Triple</option></select></div>\n"
+    "            <div id=\"edgeGapRow\" style=\"display:none\"><label for=\"edgeGap\">Gap</label><input id=\"edgeGap\" type=\"range\" min=\"0\" max=\"60\" value=\"8\"></div>\n"
     "          </div>\n"
     "          <div class=\"grid\">\n"
     "            <button id=\"applyBtn\">Apply State</button>\n"
@@ -718,6 +734,10 @@ static const char INDEX_HTML[] =
     "    const pointTotalInput = document.getElementById('pointTotal');\n"
     "    const pointModeInput = document.getElementById('pointMode');\n"
     "    const pointGapInput = document.getElementById('pointGap');\n"
+    "    const edgePaletteInput = document.getElementById('edgePalette');\n"
+    "    const edgeLenInput = document.getElementById('edgeLength');\n"
+    "    const edgeModeInput = document.getElementById('edgeMode');\n"
+    "    const edgeGapInput = document.getElementById('edgeGap');\n"
     "    const paletteRow = document.getElementById('paletteRow');\n"
     "    const swooshBgRow = document.getElementById('swooshBgRow');\n"
     "    const swooshLeftRow = document.getElementById('swooshLeftRow');\n"
@@ -738,6 +758,10 @@ static const char INDEX_HTML[] =
     "    const pointTotalRow = document.getElementById('pointTotalRow');\n"
     "    const pointModeRow = document.getElementById('pointModeRow');\n"
     "    const pointGapRow = document.getElementById('pointGapRow');\n"
+    "    const edgePaletteRow = document.getElementById('edgePaletteRow');\n"
+    "    const edgeLenRow = document.getElementById('edgeLenRow');\n"
+    "    const edgeModeRow = document.getElementById('edgeModeRow');\n"
+    "    const edgeGapRow = document.getElementById('edgeGapRow');\n"
     "    const suspendBtn = document.getElementById('suspendBtn');\n"
     "    const deviceInfo = document.getElementById('deviceInfo');\n"
     "    const paletteGallery = document.getElementById('paletteGallery');\n"
@@ -788,7 +812,7 @@ static const char INDEX_HTML[] =
     "    function closeColorDialog() { if (colorDialog && colorDialog.open) colorDialog.close(); editingColorIndex = null; }\n"
     "    function applyDialogColor() { if (editingColorIndex === null || !editingStops[editingColorIndex]) { closeColorDialog(); return; } editingStops[editingColorIndex].rgb = dialogRgb(); renderPreview(editorPreview, editingStops.map(stop => [stop.index, ...stop.rgb])); renderStopEditor(); closeColorDialog(); }\n"
     "    function renderPreview(target, colors) { if (!target) return; target.innerHTML = ''; (colors || []).forEach(entry => { const swatch = document.createElement('div'); const rgb = Array.isArray(entry) ? entry.slice(1,4) : entry.rgb; swatch.style.background = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`; target.appendChild(swatch); }); }\n"
-    "    function renderPaletteSelect() { if (!paletteInput || !swooshBgPaletteInput || !swooshLeftPaletteInput || !swooshRightPaletteInput) return; const current = String(selectedPaletteId); const options = paletteCatalog.filter(item => !item.empty).map(item => `<option value=\"${item.id}\">${item.name}</option>`).join(''); paletteInput.innerHTML = options; swooshBgPaletteInput.innerHTML = options; swooshLeftPaletteInput.innerHTML = options; swooshRightPaletteInput.innerHTML = options; if (shrinkBgPaletteInput) shrinkBgPaletteInput.innerHTML = options; if (shrinkBarPaletteInput) shrinkBarPaletteInput.innerHTML = options; if (rotationBgPaletteInput) rotationBgPaletteInput.innerHTML = options; if (rotationPaletteInput) rotationPaletteInput.innerHTML = options; if (pointPaletteInput) pointPaletteInput.innerHTML = options; if (pointBgPaletteInput) pointBgPaletteInput.innerHTML = options; if ([...paletteInput.options].some(option => option.value === current)) paletteInput.value = current; }\n"
+    "    function renderPaletteSelect() { if (!paletteInput || !swooshBgPaletteInput || !swooshLeftPaletteInput || !swooshRightPaletteInput) return; const current = String(selectedPaletteId); const options = paletteCatalog.filter(item => !item.empty).map(item => `<option value=\"${item.id}\">${item.name}</option>`).join(''); paletteInput.innerHTML = options; swooshBgPaletteInput.innerHTML = options; swooshLeftPaletteInput.innerHTML = options; swooshRightPaletteInput.innerHTML = options; if (shrinkBgPaletteInput) shrinkBgPaletteInput.innerHTML = options; if (shrinkBarPaletteInput) shrinkBarPaletteInput.innerHTML = options; if (rotationBgPaletteInput) rotationBgPaletteInput.innerHTML = options; if (rotationPaletteInput) rotationPaletteInput.innerHTML = options; if (pointPaletteInput) pointPaletteInput.innerHTML = options; if (pointBgPaletteInput) pointBgPaletteInput.innerHTML = options; if (edgePaletteInput) edgePaletteInput.innerHTML = options; if ([...paletteInput.options].some(option => option.value === current)) paletteInput.value = current; }\n"
     "    function activatePaletteCard(id) { if (!paletteGallery) return; [...paletteGallery.children].forEach(card => card.classList.toggle('active', Number(card.dataset.id) === Number(id))); }\n"
     "    function renderStopEditor() { if (!stopList || !editorPreview || !editorHint || !customPaletteName || !circlePaletteInput) return; stopList.innerHTML = ''; const current = paletteCatalog.find(item => Number(item.id) === Number(editingPaletteId)); if (!current) { editorHint.textContent = 'Select a custom palette card or create a new one.'; customPaletteName.value = ''; circlePaletteInput.checked = false; circlePaletteInput.disabled = true; renderPreview(editorPreview, []); return; } circlePaletteInput.disabled = false; circlePaletteInput.checked = editingPaletteCircle; const flowHint = editingPaletteCircle ? 'Circle mode wraps LED 27 back to LED 1.' : 'Linear mode clamps the two ends.'; editorHint.textContent = current.empty ? `Creating ${current.name}. Give it a name and tune its color stops. ${flowHint}` : `Editing custom palette ${current.name}. Stops are saved as WLED-style [index,r,g,b] entries. ${flowHint}`; if (!current.empty && customPaletteName.value === '') customPaletteName.value = current.name; const previewColors = previewColorsFromStops(editingStops, editingPaletteCircle); renderPreview(editorPreview, previewColors.length ? previewColors : (current.colors || [])); editingStops.forEach((stop, index) => { const row = document.createElement('div'); row.className = 'stop-row'; row.innerHTML = `<div><div class=\"mini-label\">Index</div><input type=\"number\" min=\"0\" max=\"255\" value=\"${stop.index}\" data-role=\"index\" data-index=\"${index}\"></div><div><div class=\"mini-label\">Color</div><button type=\"button\" class=\"color-chip\" style=\"background:${rgbToHex(stop.rgb)}\" data-role=\"edit-color\" data-index=\"${index}\" aria-label=\"Edit stop color ${index + 1}\"></button></div><button type=\"button\" class=\"ghost\" data-role=\"remove\" data-index=\"${index}\">Remove</button>`; stopList.appendChild(row); }); }\n"
     "    function renderPaletteGallery() { if (!paletteGallery) return; paletteGallery.innerHTML = ''; paletteCatalog.filter(item => !item.empty).forEach(item => { const card = document.createElement('button'); card.type = 'button'; card.className = `palette-card${item.editable ? ' editable' : ''}${Number(item.id) === Number(selectedPaletteId) ? ' active' : ''}`; card.dataset.id = item.id; const preview = document.createElement('div'); preview.className = 'palette-preview'; (item.colors || []).forEach(entry => { const swatch = document.createElement('div'); const rgb = Array.isArray(entry) ? entry.slice(1,4) : entry.rgb; swatch.style.background = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`; preview.appendChild(swatch); }); const meta = document.createElement('div'); meta.className = 'palette-meta'; meta.innerHTML = `<strong>${item.name}</strong><span>${item.editable ? 'Custom editable palette' : 'Built-in palette'}</span>`; card.append(preview, meta); card.addEventListener('click', () => { selectedPaletteId = Number(item.id); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); if (item.editable) { loadPaletteEditor(item.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } }); paletteGallery.appendChild(card); }); if (newPaletteBtn) { const next = nextEmptyCustomPalette(); newPaletteBtn.disabled = !next; newPaletteBtn.textContent = next ? 'New Custom Palette' : 'Custom Slots Full'; } }\n"
@@ -796,12 +820,12 @@ static const char INDEX_HTML[] =
     "    const baseRenderStopEditor = renderStopEditor;\n"
     "    renderStopEditor = function() { baseRenderStopEditor(); stopList.querySelectorAll('[data-role=index]').forEach(input => { input.dataset.role = 'index-led'; input.min = '1'; input.max = String(ledCount); input.step = '1'; input.value = String(clampLedIndex(paletteIndexToLedIndex(input.value, editingPaletteCircle))); const container = input.parentElement; const label = container ? container.querySelector('.mini-label') : null; if (label) label.textContent = 'LED'; }); };\n"
     "    function startNewPalette() { const item = nextEmptyCustomPalette(); if (!item) { editorHint.textContent = 'All custom palette slots are already in use.'; return; } loadPaletteEditor(item.id); }\n"
-    "    function updateEffectControls() { const effectId = Number(effectInput.value); const isSwoosh = effectId === 8 || effectId === 9; const isShrink = effectId === 10; const isRotation = effectId === 11; const isPoint = effectId === 12; paletteRow.style.display = (isSwoosh || isShrink || isRotation || isPoint) ? 'none' : ''; swooshBgRow.style.display = isSwoosh ? '' : 'none'; swooshLeftRow.style.display = isSwoosh ? '' : 'none'; swooshRightRow.style.display = isSwoosh ? '' : 'none'; sideLengthRow.style.display = isSwoosh ? '' : 'none'; shrinkBgRow.style.display = isShrink ? '' : 'none'; shrinkBarRow.style.display = isShrink ? '' : 'none'; shrinkLenRow.style.display = isShrink ? '' : 'none'; shrinkGapRow.style.display = isShrink ? '' : 'none'; if (rotationBgRow) rotationBgRow.style.display = isRotation ? '' : 'none'; if (rotationPaletteRow) rotationPaletteRow.style.display = isRotation ? '' : 'none'; if (rotationLenRow) rotationLenRow.style.display = isRotation ? '' : 'none'; if (rotationGapRow) rotationGapRow.style.display = isRotation ? '' : 'none'; if (rotationCcwRow) rotationCcwRow.style.display = isRotation ? '' : 'none'; if (pointPaletteRow) pointPaletteRow.style.display = isPoint ? '' : 'none'; if (pointBgRow) pointBgRow.style.display = isPoint ? '' : 'none'; if (pointLenRow) pointLenRow.style.display = isPoint ? '' : 'none'; if (pointTotalRow) pointTotalRow.style.display = isPoint ? '' : 'none'; if (pointModeRow) pointModeRow.style.display = isPoint ? '' : 'none'; if (pointGapRow) pointGapRow.style.display = isPoint ? '' : 'none'; }\n"
+    "    function updateEffectControls() { const effectId = Number(effectInput.value); const isSwoosh = effectId === 8 || effectId === 9; const isShrink = effectId === 10; const isRotation = effectId === 11; const isPoint = effectId === 12; const isEdge = effectId === 13; paletteRow.style.display = (isSwoosh || isShrink || isRotation || isPoint || isEdge) ? 'none' : ''; swooshBgRow.style.display = isSwoosh ? '' : 'none'; swooshLeftRow.style.display = isSwoosh ? '' : 'none'; swooshRightRow.style.display = isSwoosh ? '' : 'none'; sideLengthRow.style.display = isSwoosh ? '' : 'none'; shrinkBgRow.style.display = isShrink ? '' : 'none'; shrinkBarRow.style.display = isShrink ? '' : 'none'; shrinkLenRow.style.display = isShrink ? '' : 'none'; shrinkGapRow.style.display = isShrink ? '' : 'none'; if (rotationBgRow) rotationBgRow.style.display = isRotation ? '' : 'none'; if (rotationPaletteRow) rotationPaletteRow.style.display = isRotation ? '' : 'none'; if (rotationLenRow) rotationLenRow.style.display = isRotation ? '' : 'none'; if (rotationGapRow) rotationGapRow.style.display = isRotation ? '' : 'none'; if (rotationCcwRow) rotationCcwRow.style.display = isRotation ? '' : 'none'; if (pointPaletteRow) pointPaletteRow.style.display = isPoint ? '' : 'none'; if (pointBgRow) pointBgRow.style.display = isPoint ? '' : 'none'; if (pointLenRow) pointLenRow.style.display = isPoint ? '' : 'none'; if (pointTotalRow) pointTotalRow.style.display = isPoint ? '' : 'none'; if (pointModeRow) pointModeRow.style.display = isPoint ? '' : 'none'; if (pointGapRow) pointGapRow.style.display = isPoint ? '' : 'none'; if (edgePaletteRow) edgePaletteRow.style.display = isEdge ? '' : 'none'; if (edgeLenRow) edgeLenRow.style.display = isEdge ? '' : 'none'; if (edgeModeRow) edgeModeRow.style.display = isEdge ? '' : 'none'; if (edgeGapRow) edgeGapRow.style.display = isEdge ? '' : 'none'; }\n"
     "    async function loadInfo() { const response = await fetch('/json/info'); const info = await response.json(); deviceInfo.textContent = `${info.name} | AP ${info.wifi.ap_ssid} | LEDs ${info.led.count} @ GPIO${info.led.gpio}`; }\n"
     "    async function loadPalettes() { const response = await fetch('/json/palettes'); const json = await response.json(); paletteCatalog = Array.isArray(json.items) ? json.items : []; renderPaletteSelect(); renderPaletteGallery(); if (editingPaletteId !== null) { loadPaletteEditor(editingPaletteId); } else { renderStopEditor(); } }\n"
     "    function updateSuspendButtonLabel() { suspendBtn.textContent = lastPaused ? 'Resume' : 'Suspend'; }\n"
-    "    async function loadState() { const response = await fetch('/json/state'); const state = await response.json(); const seg = state.seg && state.seg[0] ? state.seg[0] : {}; const color = seg.col && seg.col[0] ? seg.col[0] : state.color; lastOn = !!state.on; lastPaused = !!state.paused; selectedPaletteId = Number(seg.pal ?? state.pal ?? state.palette ?? 0); updateSuspendButtonLabel(); brightnessInput.value = state.bri ?? 0; speedInput.value = seg.sx ?? state.speed ?? 128; effectInput.value = seg.fx ?? state.fx ?? 0; swooshBgPaletteInput.value = String(seg.bgPal ?? state.bgPal ?? 0); swooshLeftPaletteInput.value = String(seg.leftPal ?? state.leftPal ?? 0); swooshRightPaletteInput.value = String(seg.rightPal ?? state.rightPal ?? 0); sideLengthInput.value = String(seg.leftStops ?? state.leftStops ?? 5); if (shrinkBgPaletteInput) shrinkBgPaletteInput.value = String(seg.shrinkBg ?? state.shrinkBg ?? 0); if (shrinkBarPaletteInput) shrinkBarPaletteInput.value = String(seg.shrinkBar ?? state.shrinkBar ?? 0); if (shrinkLenInput) shrinkLenInput.value = String(seg.shrinkLen ?? state.shrinkLen ?? 4); if (shrinkGapInput) shrinkGapInput.value = String(seg.shrinkGap ?? state.shrinkGap ?? 6); if (rotationBgPaletteInput) rotationBgPaletteInput.value = String(seg.rotBg ?? state.rotBg ?? 0); if (rotationPaletteInput) rotationPaletteInput.value = String(seg.rotPal ?? state.rotPal ?? 0); if (rotationLenInput) rotationLenInput.value = String(seg.rotLen ?? state.rotLen ?? 2); if (rotationGapInput) rotationGapInput.value = String(seg.rotGap ?? state.rotGap ?? 6); if (rotationCcwInput) rotationCcwInput.checked = !!(seg.rotCcw ?? state.rotCcw ?? false); if (pointPaletteInput) pointPaletteInput.value = String(seg.ptPal ?? state.ptPal ?? 0); if (pointBgPaletteInput) pointBgPaletteInput.value = String(seg.ptBg ?? state.ptBg ?? 0); if (pointLenInput) pointLenInput.value = String(seg.ptLen ?? state.ptLen ?? 3); if (pointTotalInput) pointTotalInput.value = String(seg.ptTotal ?? state.ptTotal ?? 14); if (pointModeInput) pointModeInput.value = String(seg.ptMode ?? state.ptMode ?? 1); if (pointGapInput) pointGapInput.value = String(seg.ptGap ?? state.ptGap ?? 8); updateEffectControls(); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { if (editingPaletteId !== selected.id) loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } if (Array.isArray(color)) { colorInput.value = rgbToHex(color); } }\n"
-    "    async function applyState() { const [r, g, b] = hexToRgb(colorInput.value); const payload = { on: true, paused: false, bri: Number(brightnessInput.value), color: [r, g, b], effect: Number(effectInput.value), speed: Number(speedInput.value), palette: Number(paletteInput.value), bgPal: Number(swooshBgPaletteInput.value), leftPal: Number(swooshLeftPaletteInput.value), rightPal: Number(swooshRightPaletteInput.value), leftStops: Number(sideLengthInput.value), rightStops: Number(sideLengthInput.value), shrinkBg: Number(shrinkBgPaletteInput.value), shrinkBar: Number(shrinkBarPaletteInput.value), shrinkLen: Number(shrinkLenInput.value), shrinkGap: Number(shrinkGapInput.value), rotBg: Number(rotationBgPaletteInput.value), rotPal: Number(rotationPaletteInput.value), rotLen: Number(rotationLenInput.value), rotGap: Number(rotationGapInput.value), rotCcw: !!rotationCcwInput.checked, ptPal: Number(pointPaletteInput.value), ptBg: Number(pointBgPaletteInput.value), ptLen: Number(pointLenInput.value), ptTotal: Number(pointTotalInput.value), ptMode: Number(pointModeInput.value), ptGap: Number(pointGapInput.value) }; await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
+    "    async function loadState() { const response = await fetch('/json/state'); const state = await response.json(); const seg = state.seg && state.seg[0] ? state.seg[0] : {}; const color = seg.col && seg.col[0] ? seg.col[0] : state.color; lastOn = !!state.on; lastPaused = !!state.paused; selectedPaletteId = Number(seg.pal ?? state.pal ?? state.palette ?? 0); updateSuspendButtonLabel(); brightnessInput.value = state.bri ?? 0; speedInput.value = seg.sx ?? state.speed ?? 128; effectInput.value = seg.fx ?? state.fx ?? 0; swooshBgPaletteInput.value = String(seg.bgPal ?? state.bgPal ?? 0); swooshLeftPaletteInput.value = String(seg.leftPal ?? state.leftPal ?? 0); swooshRightPaletteInput.value = String(seg.rightPal ?? state.rightPal ?? 0); sideLengthInput.value = String(seg.leftStops ?? state.leftStops ?? 5); if (shrinkBgPaletteInput) shrinkBgPaletteInput.value = String(seg.shrinkBg ?? state.shrinkBg ?? 0); if (shrinkBarPaletteInput) shrinkBarPaletteInput.value = String(seg.shrinkBar ?? state.shrinkBar ?? 0); if (shrinkLenInput) shrinkLenInput.value = String(seg.shrinkLen ?? state.shrinkLen ?? 4); if (shrinkGapInput) shrinkGapInput.value = String(seg.shrinkGap ?? state.shrinkGap ?? 6); if (rotationBgPaletteInput) rotationBgPaletteInput.value = String(seg.rotBg ?? state.rotBg ?? 0); if (rotationPaletteInput) rotationPaletteInput.value = String(seg.rotPal ?? state.rotPal ?? 0); if (rotationLenInput) rotationLenInput.value = String(seg.rotLen ?? state.rotLen ?? 2); if (rotationGapInput) rotationGapInput.value = String(seg.rotGap ?? state.rotGap ?? 6); if (rotationCcwInput) rotationCcwInput.checked = !!(seg.rotCcw ?? state.rotCcw ?? false); if (pointPaletteInput) pointPaletteInput.value = String(seg.ptPal ?? state.ptPal ?? 0); if (pointBgPaletteInput) pointBgPaletteInput.value = String(seg.ptBg ?? state.ptBg ?? 0); if (pointLenInput) pointLenInput.value = String(seg.ptLen ?? state.ptLen ?? 3); if (pointTotalInput) pointTotalInput.value = String(seg.ptTotal ?? state.ptTotal ?? 14); if (pointModeInput) pointModeInput.value = String(seg.ptMode ?? state.ptMode ?? 1); if (pointGapInput) pointGapInput.value = String(seg.ptGap ?? state.ptGap ?? 8); if (edgePaletteInput) edgePaletteInput.value = String(seg.edgePal ?? state.edgePal ?? 0); if (edgeLenInput) edgeLenInput.value = String(seg.edgeLen ?? state.edgeLen ?? 2); if (edgeModeInput) edgeModeInput.value = String(seg.edgeMode ?? state.edgeMode ?? 1); if (edgeGapInput) edgeGapInput.value = String(seg.edgeGap ?? state.edgeGap ?? 8); updateEffectControls(); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { if (editingPaletteId !== selected.id) loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } if (Array.isArray(color)) { colorInput.value = rgbToHex(color); } }\n"
+    "    async function applyState() { const [r, g, b] = hexToRgb(colorInput.value); const payload = { on: true, paused: false, bri: Number(brightnessInput.value), color: [r, g, b], effect: Number(effectInput.value), speed: Number(speedInput.value), palette: Number(paletteInput.value), bgPal: Number(swooshBgPaletteInput.value), leftPal: Number(swooshLeftPaletteInput.value), rightPal: Number(swooshRightPaletteInput.value), leftStops: Number(sideLengthInput.value), rightStops: Number(sideLengthInput.value), shrinkBg: Number(shrinkBgPaletteInput.value), shrinkBar: Number(shrinkBarPaletteInput.value), shrinkLen: Number(shrinkLenInput.value), shrinkGap: Number(shrinkGapInput.value), rotBg: Number(rotationBgPaletteInput.value), rotPal: Number(rotationPaletteInput.value), rotLen: Number(rotationLenInput.value), rotGap: Number(rotationGapInput.value), rotCcw: !!rotationCcwInput.checked, ptPal: Number(pointPaletteInput.value), ptBg: Number(pointBgPaletteInput.value), ptLen: Number(pointLenInput.value), ptTotal: Number(pointTotalInput.value), ptMode: Number(pointModeInput.value), ptGap: Number(pointGapInput.value), edgePal: Number(edgePaletteInput.value), edgeLen: Number(edgeLenInput.value), edgeMode: Number(edgeModeInput.value), edgeGap: Number(edgeGapInput.value) }; await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
     "    async function savePalette() { if (editingPaletteId === null) { editorHint.textContent = 'Select a custom palette before saving.'; return; } if (!editingStops.length) { editorHint.textContent = 'Add at least one color stop before saving.'; return; } const payload = { id: Number(editingPaletteId), name: customPaletteName.value.trim() || 'Custom Palette', circle: !!circlePaletteInput.checked, stops: editingStops.map(stop => [Number(stop.index), ...stop.rgb]) }; await fetch('/json/palettes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadPalettes(); await loadState(); loadPaletteEditor(editingPaletteId); }\n"
     "    document.getElementById('applyBtn').addEventListener('click', applyState);\n"
     "    document.getElementById('refreshBtn').addEventListener('click', loadState);\n"
@@ -858,6 +882,8 @@ static const char *effect_name(effect_id_t effect)
         return "rotation";
     case EFFECT_POINT:
         return "point";
+    case EFFECT_BREATHE_EDGE:
+        return "breathe_edge";
     default:
         return "solid";
     }
@@ -972,6 +998,10 @@ static effect_id_t parse_effect_name(const char *value)
     if (strcasecmp(value, "point") == 0) {
         return EFFECT_POINT;
     }
+    if (strcasecmp(value, "breathe_edge") == 0 || strcasecmp(value, "breathe edge") == 0 ||
+        strcasecmp(value, "edge") == 0) {
+        return EFFECT_BREATHE_EDGE;
+    }
     return clamp_effect(atoi(value));
 }
 
@@ -1069,6 +1099,39 @@ static uint8_t clamp_point_repeat(int value)
 }
 
 static uint8_t clamp_point_gap(int value)
+{
+    if (value < 0) {
+        return 0U;
+    }
+    if (value > 60) {
+        return 60U;
+    }
+    return (uint8_t) value;
+}
+
+static uint8_t clamp_edge_length(int value)
+{
+    if (value < 1) {
+        return 1U;
+    }
+    if (value > (int) EDGE_MAX_LENGTH) {
+        return (uint8_t) EDGE_MAX_LENGTH;
+    }
+    return (uint8_t) value;
+}
+
+static uint8_t clamp_edge_repeat(int value)
+{
+    if (value < (int) EDGE_MIN_REPEAT) {
+        return (uint8_t) EDGE_MIN_REPEAT;
+    }
+    if (value > (int) EDGE_MAX_REPEAT) {
+        return (uint8_t) EDGE_MAX_REPEAT;
+    }
+    return (uint8_t) value;
+}
+
+static uint8_t clamp_edge_gap(int value)
 {
     if (value < 0) {
         return 0U;
@@ -1360,6 +1423,8 @@ static uint32_t effect_delay_ms(const light_state_t *state)
         return speed_to_delay(state->speed, 30U, 360U);
     case EFFECT_POINT:
         return speed_to_delay(state->speed, 30U, 360U);
+    case EFFECT_BREATHE_EDGE:
+        return speed_to_delay(state->speed, 18U, 42U);
     default:
         return 40U;
     }
@@ -1822,6 +1887,64 @@ static void render_point(const light_state_t *state, uint32_t frame)
     }
 }
 
+static void render_breathe_edge(const light_state_t *state, uint32_t frame)
+{
+    light_state_t edge;
+    load_swoosh_palette_context(&edge, state, state->edge_palette);
+
+    /* Only the edge segment is lit; the rest of the ring stays off. */
+    clear_pixels();
+
+    const uint16_t led_count = CONFIG_LIGHT_RING_LED_COUNT;
+    uint8_t edge_len = clamp_edge_length(state->edge_length);
+    if (edge_len > led_count) {
+        edge_len = (uint8_t) led_count;
+    }
+    uint8_t repeat = clamp_edge_repeat(state->edge_repeat);
+    uint32_t gap = clamp_edge_gap(state->edge_gap);
+
+    /* One breath fades the edge in, briefly holds, then fades out. `repeat`
+       chains 1/2/3 breaths back to back, then `gap` frames pause (edge off)
+       before the burst repeats. */
+    const uint32_t inhale_frames = 24U;
+    const uint32_t hold_high_frames = 6U;
+    const uint32_t exhale_frames = 24U;
+    const uint32_t breath_frames = inhale_frames + hold_high_frames + exhale_frames;
+    uint32_t burst_frames = breath_frames * repeat;
+    uint32_t period = burst_frames + gap;
+    uint32_t phase = (period > 0U) ? (frame % period) : 0U;
+
+    if (phase >= burst_frames) {
+        return; /* paused gap between bursts -> edge off */
+    }
+
+    uint32_t bp = phase % breath_frames;
+    uint8_t breath_level;
+    if (bp < inhale_frames) {
+        breath_level = ease8_in_out((uint8_t) ((bp * 255U) / (inhale_frames - 1U)));
+    } else if (bp < (inhale_frames + hold_high_frames)) {
+        breath_level = 255U;
+    } else {
+        uint32_t ep = bp - inhale_frames - hold_high_frames;
+        breath_level = (uint8_t) (255U - ease8_in_out((uint8_t) ((ep * 255U) / (exhale_frames - 1U))));
+    }
+
+    if (breath_level == 0U) {
+        return;
+    }
+
+    /* The edge segment is anchored at the strip end (LEDs 26/27 on a 27-LED
+       ring); a larger edge length extends it back toward the start. */
+    uint16_t start = (uint16_t) (led_count - edge_len);
+    for (uint8_t pos = 0; pos < edge_len; ++pos) {
+        uint16_t led = (uint16_t) (start + pos);
+        uint8_t palette_index = (edge_len > 1U)
+                                    ? (uint8_t) (((uint16_t) pos * 255U) / (edge_len - 1U))
+                                    : 0U;
+        set_state_palette_level(led, &edge, palette_index, breath_level);
+    }
+}
+
 static esp_err_t transmit_pixels(void)
 {
     const rmt_transmit_config_t tx_config = {
@@ -1878,6 +2001,9 @@ static void render_frame(const light_state_t *state, uint32_t frame)
         break;
     case EFFECT_POINT:
         render_point(state, frame);
+        break;
+    case EFFECT_BREATHE_EDGE:
+        render_breathe_edge(state, frame);
         break;
     default:
         render_solid(state);
@@ -2249,6 +2375,10 @@ static void apply_segment_json(cJSON *segment, light_state_t *state)
     cJSON *pt_total = cJSON_GetObjectItemCaseSensitive(segment, "ptTotal");
     cJSON *pt_mode = cJSON_GetObjectItemCaseSensitive(segment, "ptMode");
     cJSON *pt_gap = cJSON_GetObjectItemCaseSensitive(segment, "ptGap");
+    cJSON *edge_pal = cJSON_GetObjectItemCaseSensitive(segment, "edgePal");
+    cJSON *edge_len = cJSON_GetObjectItemCaseSensitive(segment, "edgeLen");
+    cJSON *edge_mode = cJSON_GetObjectItemCaseSensitive(segment, "edgeMode");
+    cJSON *edge_gap = cJSON_GetObjectItemCaseSensitive(segment, "edgeGap");
     cJSON *on = cJSON_GetObjectItemCaseSensitive(segment, "on");
     cJSON *colors = cJSON_GetObjectItemCaseSensitive(segment, "col");
 
@@ -2321,6 +2451,18 @@ static void apply_segment_json(cJSON *segment, light_state_t *state)
     if (cJSON_IsNumber(pt_gap)) {
         state->point_gap = clamp_point_gap(pt_gap->valueint);
     }
+    if (cJSON_IsNumber(edge_pal)) {
+        state->edge_palette = clamp_palette(edge_pal->valueint);
+    }
+    if (cJSON_IsNumber(edge_len)) {
+        state->edge_length = clamp_edge_length(edge_len->valueint);
+    }
+    if (cJSON_IsNumber(edge_mode)) {
+        state->edge_repeat = clamp_edge_repeat(edge_mode->valueint);
+    }
+    if (cJSON_IsNumber(edge_gap)) {
+        state->edge_gap = clamp_edge_gap(edge_gap->valueint);
+    }
     if (cJSON_IsBool(on)) {
         state->on = cJSON_IsTrue(on);
     }
@@ -2360,6 +2502,10 @@ static void apply_json_state(cJSON *root, light_state_t *state)
     cJSON *pt_total = cJSON_GetObjectItemCaseSensitive(root, "ptTotal");
     cJSON *pt_mode = cJSON_GetObjectItemCaseSensitive(root, "ptMode");
     cJSON *pt_gap = cJSON_GetObjectItemCaseSensitive(root, "ptGap");
+    cJSON *edge_pal = cJSON_GetObjectItemCaseSensitive(root, "edgePal");
+    cJSON *edge_len = cJSON_GetObjectItemCaseSensitive(root, "edgeLen");
+    cJSON *edge_mode = cJSON_GetObjectItemCaseSensitive(root, "edgeMode");
+    cJSON *edge_gap = cJSON_GetObjectItemCaseSensitive(root, "edgeGap");
     cJSON *color = cJSON_GetObjectItemCaseSensitive(root, "color");
     cJSON *segments = cJSON_GetObjectItemCaseSensitive(root, "seg");
 
@@ -2452,6 +2598,18 @@ static void apply_json_state(cJSON *root, light_state_t *state)
     if (cJSON_IsNumber(pt_gap)) {
         state->point_gap = clamp_point_gap(pt_gap->valueint);
     }
+    if (cJSON_IsNumber(edge_pal)) {
+        state->edge_palette = clamp_palette(edge_pal->valueint);
+    }
+    if (cJSON_IsNumber(edge_len)) {
+        state->edge_length = clamp_edge_length(edge_len->valueint);
+    }
+    if (cJSON_IsNumber(edge_mode)) {
+        state->edge_repeat = clamp_edge_repeat(edge_mode->valueint);
+    }
+    if (cJSON_IsNumber(edge_gap)) {
+        state->edge_gap = clamp_edge_gap(edge_gap->valueint);
+    }
     apply_color_array(color, state);
 
     if (cJSON_IsArray(segments) && cJSON_GetArraySize(segments) > 0) {
@@ -2498,6 +2656,10 @@ static cJSON *build_state_json(void)
     cJSON_AddNumberToObject(root, "ptTotal", state.point_total_length);
     cJSON_AddNumberToObject(root, "ptMode", state.point_repeat);
     cJSON_AddNumberToObject(root, "ptGap", state.point_gap);
+    cJSON_AddNumberToObject(root, "edgePal", state.edge_palette);
+    cJSON_AddNumberToObject(root, "edgeLen", state.edge_length);
+    cJSON_AddNumberToObject(root, "edgeMode", state.edge_repeat);
+    cJSON_AddNumberToObject(root, "edgeGap", state.edge_gap);
     cJSON_AddStringToObject(root, "effectName", effect_name((effect_id_t) state.effect));
     cJSON_AddStringToObject(root, "paletteName", state.palette_label[0] != '\0' ? state.palette_label : palette_name(state.palette));
 
@@ -2531,6 +2693,10 @@ static cJSON *build_state_json(void)
     cJSON_AddNumberToObject(segment, "ptTotal", state.point_total_length);
     cJSON_AddNumberToObject(segment, "ptMode", state.point_repeat);
     cJSON_AddNumberToObject(segment, "ptGap", state.point_gap);
+    cJSON_AddNumberToObject(segment, "edgePal", state.edge_palette);
+    cJSON_AddNumberToObject(segment, "edgeLen", state.edge_length);
+    cJSON_AddNumberToObject(segment, "edgeMode", state.edge_repeat);
+    cJSON_AddNumberToObject(segment, "edgeGap", state.edge_gap);
 
     cJSON_AddItemToArray(primary_color, cJSON_CreateNumber(state.red));
     cJSON_AddItemToArray(primary_color, cJSON_CreateNumber(state.green));
