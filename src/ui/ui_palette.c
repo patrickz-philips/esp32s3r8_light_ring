@@ -31,6 +31,7 @@ const char UI_PALETTE_EDITOR_HTML[] =
     "            <div class=\"toolbar\">\n"
     "              <button id=\"addStopBtn\" class=\"ghost\" type=\"button\">Add Stop</button>\n"
     "              <button id=\"savePaletteBtn\" type=\"button\">Save Palette</button>\n"
+    "              <button id=\"deletePaletteBtn\" class=\"ghost danger\" type=\"button\">Delete Palette</button>\n"
     "            </div>\n"
     "            <div id=\"stopList\" class=\"stop-list\"></div>\n"
     "          </div>\n"

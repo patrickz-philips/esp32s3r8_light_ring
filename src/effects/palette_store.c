@@ -712,6 +712,7 @@ esp_err_t json_palettes_post_handler(httpd_req_t *req)
     cJSON *colors = cJSON_GetObjectItemCaseSensitive(root, "colors");
     cJSON *circle = cJSON_GetObjectItemCaseSensitive(root, "circle");
     cJSON *circular = cJSON_GetObjectItemCaseSensitive(root, "circular");
+    cJSON *action = cJSON_GetObjectItemCaseSensitive(root, "action");
     cJSON *definition = cJSON_IsArray(stops) ? stops : (cJSON_IsArray(palette) ? palette : colors);
 
     if (!cJSON_IsNumber(id)) {
@@ -725,6 +726,23 @@ esp_err_t json_palettes_post_handler(httpd_req_t *req)
         cJSON_Delete(root);
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "Palette id must refer to a custom palette");
+    }
+
+    if (cJSON_IsString(action) && action->valuestring != NULL && strcmp(action->valuestring, "delete") == 0) {
+        size_t target_slot = custom_palette_slot_from_id(palette_id);
+        xSemaphoreTake(s_state_lock, portMAX_DELAY);
+        memset(&s_custom_palettes[target_slot], 0, sizeof(custom_palette_t));
+        xSemaphoreGive(s_state_lock);
+
+        cJSON_Delete(root);
+        if (save_custom_palettes_to_nvs() != ESP_OK) {
+            return httpd_resp_send_500(req);
+        }
+
+        cJSON *response = build_palettes_json();
+        esp_err_t ret = send_json_response(req, response);
+        cJSON_Delete(response);
+        return ret;
     }
 
     custom_palette_t updated = {0};

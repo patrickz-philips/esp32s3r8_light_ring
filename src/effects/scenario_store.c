@@ -139,6 +139,42 @@ esp_err_t json_scenarios_post_handler(httpd_req_t *req)
         return httpd_resp_sendstr(req, "JSON parse failed");
     }
 
+    cJSON *action = cJSON_GetObjectItemCaseSensitive(root, "action");
+    if (cJSON_IsString(action) && action->valuestring != NULL && strcmp(action->valuestring, "delete") == 0) {
+        cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
+        if (!cJSON_IsNumber(id) || id->valueint < 0) {
+            cJSON_Delete(root);
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "Scenario id is required");
+        }
+
+        bool removed = false;
+        xSemaphoreTake(s_state_lock, portMAX_DELAY);
+        if (id->valueint < s_scenario_count) {
+            for (uint8_t index = (uint8_t) id->valueint; index + 1U < s_scenario_count; ++index) {
+                s_scenarios[index] = s_scenarios[index + 1U];
+            }
+            s_scenario_count--;
+            memset(&s_scenarios[s_scenario_count], 0, sizeof(scenario_t));
+            removed = true;
+        }
+        xSemaphoreGive(s_state_lock);
+
+        cJSON_Delete(root);
+        if (!removed) {
+            httpd_resp_set_status(req, "404 Not Found");
+            return httpd_resp_sendstr(req, "Scenario not found");
+        }
+        if (save_scenarios_to_nvs() != ESP_OK) {
+            return httpd_resp_send_500(req);
+        }
+
+        cJSON *response = build_scenarios_json();
+        esp_err_t ret = send_json_response(req, response);
+        cJSON_Delete(response);
+        return ret;
+    }
+
     cJSON *name = cJSON_GetObjectItemCaseSensitive(root, "name");
     cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
     if (!cJSON_IsObject(state)) {
