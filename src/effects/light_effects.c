@@ -16,6 +16,7 @@
 #include "board_led.h"
 #include "light_effects.h"
 #include "light_types.h"
+#include "palette_compress.h"
 #include "palette_store.h"
 
 static const char *TAG = "light_effects";
@@ -56,6 +57,9 @@ static light_state_t s_light_state = {
     .edge_length = 2,
     .edge_repeat = 1,
     .edge_gap = 8,
+    .chase_background_palette = 0,
+    .chase_palette = 5,
+    .chase_length = 5,
 };
 
 
@@ -226,6 +230,17 @@ static uint8_t clamp_rotation_gap(int value)
     }
     if (value > 60) {
         return 60U;
+    }
+    return (uint8_t) value;
+}
+
+static uint8_t clamp_chase_length(int value)
+{
+    if (value < (int) CHASE_MIN_LENGTH) {
+        return (uint8_t) CHASE_MIN_LENGTH;
+    }
+    if (value > (int) CHASE_MAX_LENGTH) {
+        return (uint8_t) CHASE_MAX_LENGTH;
     }
     return (uint8_t) value;
 }
@@ -602,21 +617,6 @@ static void render_rainbow(const light_state_t *state, uint32_t frame)
     }
 }
 
-static void render_chase(const light_state_t *state, uint32_t frame)
-{
-    uint16_t head = (uint16_t) ((frame * (1U + ((uint32_t) state->speed / 40U))) % CONFIG_LIGHT_RING_LED_COUNT);
-
-    for (uint16_t index = 0; index < CONFIG_LIGHT_RING_LED_COUNT; ++index) {
-        set_state_pixel_level(index, state, 12U);
-    }
-
-    set_state_pixel_level(head, state, 255U);
-    set_state_pixel_level((uint16_t) ((head + CONFIG_LIGHT_RING_LED_COUNT - 1U) % CONFIG_LIGHT_RING_LED_COUNT), state, 144U);
-    set_state_pixel_level((uint16_t) ((head + 1U) % CONFIG_LIGHT_RING_LED_COUNT), state, 144U);
-    set_state_pixel_level((uint16_t) ((head + CONFIG_LIGHT_RING_LED_COUNT - 2U) % CONFIG_LIGHT_RING_LED_COUNT), state, 72U);
-    set_state_pixel_level((uint16_t) ((head + 2U) % CONFIG_LIGHT_RING_LED_COUNT), state, 72U);
-}
-
 static void render_color_wipe(const light_state_t *state, uint32_t frame)
 {
     uint32_t step = frame * (1U + ((uint32_t) state->speed / 48U));
@@ -750,18 +750,16 @@ static void render_swoosh(const light_state_t *state, uint32_t frame)
 
     for (uint8_t tail = 0; tail < left_span; ++tail) {
         uint8_t position = (uint8_t) ((head + SWOOSH_PATH_LENGTH - tail) % SWOOSH_PATH_LENGTH);
-        uint8_t palette_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - position);
         uint8_t led = swoosh_left_ring_index(position);
         uint8_t level = (uint8_t) (255U - ((uint16_t) tail * 196U) / left_span);
-        set_state_palette_level(led, &left_state, led_index_to_palette_index_linear(palette_position), level);
+        set_state_palette_level(led, &left_state, palette_compress_index(tail, left_span), level);
     }
 
     for (uint8_t tail = 0; tail < right_span; ++tail) {
         uint8_t position = (uint8_t) ((head + SWOOSH_PATH_LENGTH - tail) % SWOOSH_PATH_LENGTH);
-        uint8_t palette_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - position);
         uint8_t led = swoosh_right_ring_index(position);
         uint8_t level = (uint8_t) (255U - ((uint16_t) tail * 196U) / right_span);
-        set_state_palette_level(led, &right_state, led_index_to_palette_index_linear(palette_position), level);
+        set_state_palette_level(led, &right_state, palette_compress_index(tail, right_span), level);
     }
 }
 
@@ -788,7 +786,7 @@ static void render_swoosh_reverse(const light_state_t *state, uint32_t frame)
         uint8_t mirrored_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - position);
         uint8_t led = swoosh_left_ring_index(mirrored_position);
         uint8_t level = (uint8_t) (255U - ((uint16_t) tail * 196U) / left_span);
-        set_state_palette_level(led, &left_state, led_index_to_palette_index_linear(position), level);
+        set_state_palette_level(led, &left_state, palette_compress_index((uint8_t) (left_span - 1U - tail), left_span), level);
     }
 
     for (uint8_t tail = 0; tail < right_span; ++tail) {
@@ -796,7 +794,7 @@ static void render_swoosh_reverse(const light_state_t *state, uint32_t frame)
         uint8_t mirrored_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - position);
         uint8_t led = swoosh_right_ring_index(mirrored_position);
         uint8_t level = (uint8_t) (255U - ((uint16_t) tail * 196U) / right_span);
-        set_state_palette_level(led, &right_state, led_index_to_palette_index_linear(position), level);
+        set_state_palette_level(led, &right_state, palette_compress_index((uint8_t) (right_span - 1U - tail), right_span), level);
     }
 }
 
@@ -844,9 +842,7 @@ static void render_shrink(const light_state_t *state, uint32_t frame)
         uint16_t start = (uint16_t) (((uint16_t) (SHRINK_SEGMENT_LENGTH * (bar_index + 1U)) - 1U) % led_count);
         for (uint8_t pos = 0; pos < bar_len; ++pos) {
             uint16_t led = (uint16_t) ((start + pos) % led_count);
-            uint8_t palette_index = (bar_len > 1U)
-                                        ? (uint8_t) (((uint16_t) pos * 255U) / (bar_len - 1U))
-                                        : 0U;
+            uint8_t palette_index = palette_compress_index(pos, bar_len);
             bool active = (pos >= removed_per_side) && (pos < active_end);
             const light_state_t *ctx = active ? &bar : &background;
             set_state_palette_level(led, ctx, palette_index, 255U);
@@ -916,11 +912,40 @@ static void render_rotation(const light_state_t *state, uint32_t frame)
 
         for (uint8_t pos = 0; pos < active_len; ++pos) {
             uint16_t led = (uint16_t) ((start + pos) % led_count);
-            uint8_t palette_index = (active_len > 1U)
-                                        ? (uint8_t) (((uint16_t) pos * 255U) / (active_len - 1U))
-                                        : 0U;
+            uint8_t palette_index = palette_compress_index(pos, active_len);
             set_state_palette_level(led, &rotation, palette_index, 255U);
         }
+    }
+}
+
+static void render_chase(const light_state_t *state, uint32_t frame)
+{
+    light_state_t background;
+    light_state_t chase;
+    load_swoosh_palette_context(&background, state, state->chase_background_palette);
+    load_swoosh_palette_context(&chase, state, state->chase_palette);
+
+    const uint16_t led_count = CONFIG_LIGHT_RING_LED_COUNT;
+    uint8_t chase_len = clamp_chase_length(state->chase_length);
+    if (chase_len > (uint8_t) led_count) {
+        chase_len = (uint8_t) led_count;
+    }
+
+    /* Paint the whole ring with the background palette first; the moving chase
+       block is drawn on top of it. */
+    for (uint16_t index = 0; index < led_count; ++index) {
+        set_state_pixel_level(index, &background, 255U);
+    }
+
+    uint16_t head = (uint16_t) ((frame * (1U + ((uint32_t) state->speed / 40U))) % led_count);
+
+    /* The chase block trails behind the head: pos 0 is the leading pixel and
+       maps to palette index 0, so the chase palette gradient is compressed
+       evenly across the configured block length. */
+    for (uint8_t pos = 0; pos < chase_len; ++pos) {
+        uint16_t led = (uint16_t) ((head + led_count - pos) % led_count);
+        uint8_t palette_index = palette_compress_index(pos, chase_len);
+        set_state_palette_level(led, &chase, palette_index, 255U);
     }
 }
 
@@ -988,9 +1013,7 @@ static void render_point(const light_state_t *state, uint32_t frame)
             uint32_t rail_pos = step + seg;            /* 0 .. total-1 */
             uint8_t arm_pos = (uint8_t) (rail_offset + rail_pos);
             uint16_t led = point_arm_led(arm, arm_pos);
-            uint8_t palette_index = (pt > 1U)
-                                        ? (uint8_t) (((uint16_t) seg * 255U) / (pt - 1U))
-                                        : 0U;
+            uint8_t palette_index = palette_compress_index(seg, pt);
             set_state_palette_level(led, &point, palette_index, 255U);
         }
     }
@@ -1051,9 +1074,7 @@ static void render_breathe_edge(const light_state_t *state, uint32_t frame)
     uint16_t start = (uint16_t) (led_count - low_count);
     for (uint8_t pos = 0; pos < edge_len; ++pos) {
         uint16_t led = (uint16_t) ((start + pos) % led_count);
-        uint8_t palette_index = (edge_len > 1U)
-                                    ? (uint8_t) (((uint16_t) pos * 255U) / (edge_len - 1U))
-                                    : 0U;
+        uint8_t palette_index = palette_compress_index(pos, edge_len);
         set_state_palette_level(led, &edge, palette_index, breath_level);
     }
 }
@@ -1180,6 +1201,9 @@ static void apply_segment_json(cJSON *segment, light_state_t *state)
     cJSON *edge_len = cJSON_GetObjectItemCaseSensitive(segment, "edgeLen");
     cJSON *edge_mode = cJSON_GetObjectItemCaseSensitive(segment, "edgeMode");
     cJSON *edge_gap = cJSON_GetObjectItemCaseSensitive(segment, "edgeGap");
+    cJSON *chase_bg = cJSON_GetObjectItemCaseSensitive(segment, "chaseBg");
+    cJSON *chase_pal = cJSON_GetObjectItemCaseSensitive(segment, "chasePal");
+    cJSON *chase_len = cJSON_GetObjectItemCaseSensitive(segment, "chaseLen");
     cJSON *on = cJSON_GetObjectItemCaseSensitive(segment, "on");
     cJSON *colors = cJSON_GetObjectItemCaseSensitive(segment, "col");
 
@@ -1264,6 +1288,15 @@ static void apply_segment_json(cJSON *segment, light_state_t *state)
     if (cJSON_IsNumber(edge_gap)) {
         state->edge_gap = clamp_edge_gap(edge_gap->valueint);
     }
+    if (cJSON_IsNumber(chase_bg)) {
+        state->chase_background_palette = clamp_palette(chase_bg->valueint);
+    }
+    if (cJSON_IsNumber(chase_pal)) {
+        state->chase_palette = clamp_palette(chase_pal->valueint);
+    }
+    if (cJSON_IsNumber(chase_len)) {
+        state->chase_length = clamp_chase_length(chase_len->valueint);
+    }
     if (cJSON_IsBool(on)) {
         state->on = cJSON_IsTrue(on);
     }
@@ -1307,6 +1340,9 @@ void apply_json_state(cJSON *root, light_state_t *state)
     cJSON *edge_len = cJSON_GetObjectItemCaseSensitive(root, "edgeLen");
     cJSON *edge_mode = cJSON_GetObjectItemCaseSensitive(root, "edgeMode");
     cJSON *edge_gap = cJSON_GetObjectItemCaseSensitive(root, "edgeGap");
+    cJSON *chase_bg = cJSON_GetObjectItemCaseSensitive(root, "chaseBg");
+    cJSON *chase_pal = cJSON_GetObjectItemCaseSensitive(root, "chasePal");
+    cJSON *chase_len = cJSON_GetObjectItemCaseSensitive(root, "chaseLen");
     cJSON *color = cJSON_GetObjectItemCaseSensitive(root, "color");
     cJSON *segments = cJSON_GetObjectItemCaseSensitive(root, "seg");
 
@@ -1411,6 +1447,15 @@ void apply_json_state(cJSON *root, light_state_t *state)
     if (cJSON_IsNumber(edge_gap)) {
         state->edge_gap = clamp_edge_gap(edge_gap->valueint);
     }
+    if (cJSON_IsNumber(chase_bg)) {
+        state->chase_background_palette = clamp_palette(chase_bg->valueint);
+    }
+    if (cJSON_IsNumber(chase_pal)) {
+        state->chase_palette = clamp_palette(chase_pal->valueint);
+    }
+    if (cJSON_IsNumber(chase_len)) {
+        state->chase_length = clamp_chase_length(chase_len->valueint);
+    }
     apply_color_array(color, state);
 
     if (cJSON_IsArray(segments) && cJSON_GetArraySize(segments) > 0) {
@@ -1461,6 +1506,9 @@ cJSON *build_state_json(void)
     cJSON_AddNumberToObject(root, "edgeLen", state.edge_length);
     cJSON_AddNumberToObject(root, "edgeMode", state.edge_repeat);
     cJSON_AddNumberToObject(root, "edgeGap", state.edge_gap);
+    cJSON_AddNumberToObject(root, "chaseBg", state.chase_background_palette);
+    cJSON_AddNumberToObject(root, "chasePal", state.chase_palette);
+    cJSON_AddNumberToObject(root, "chaseLen", state.chase_length);
     cJSON_AddStringToObject(root, "effectName", effect_name((effect_id_t) state.effect));
     cJSON_AddStringToObject(root, "paletteName", state.palette_label[0] != '\0' ? state.palette_label : palette_name(state.palette));
 
@@ -1498,6 +1546,9 @@ cJSON *build_state_json(void)
     cJSON_AddNumberToObject(segment, "edgeLen", state.edge_length);
     cJSON_AddNumberToObject(segment, "edgeMode", state.edge_repeat);
     cJSON_AddNumberToObject(segment, "edgeGap", state.edge_gap);
+    cJSON_AddNumberToObject(segment, "chaseBg", state.chase_background_palette);
+    cJSON_AddNumberToObject(segment, "chasePal", state.chase_palette);
+    cJSON_AddNumberToObject(segment, "chaseLen", state.chase_length);
 
     cJSON_AddItemToArray(primary_color, cJSON_CreateNumber(state.red));
     cJSON_AddItemToArray(primary_color, cJSON_CreateNumber(state.green));

@@ -40,6 +40,8 @@
 #define EDGE_MAX_LENGTH            (CONFIG_LIGHT_RING_LED_COUNT)
 #define EDGE_MIN_REPEAT            1U
 #define EDGE_MAX_REPEAT            3U
+#define CHASE_MIN_LENGTH          1U
+#define CHASE_MAX_LENGTH          (CONFIG_LIGHT_RING_LED_COUNT)
 #define DNS_SERVER_PORT             53
 #define DNS_PACKET_MAX_SIZE         512
 #define STRINGIFY_HELPER(value)     #value

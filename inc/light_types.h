@@ -82,6 +82,9 @@ typedef struct {
     uint8_t edge_length;
     uint8_t edge_repeat;
     uint8_t edge_gap;
+    uint8_t chase_background_palette;
+    uint8_t chase_palette;
+    uint8_t chase_length;
     bool has_palette_cache;
     uint8_t palette_stop_count;
     bool palette_circular;

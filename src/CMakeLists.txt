@@ -5,6 +5,7 @@ idf_component_register(
         "hardware/led_strip_encoder.c"
         "effects/light_effects.c"
         "effects/palette_store.c"
+        "effects/palette_compress.c"
         "effects/scenario_store.c"
         "network/wifi_manager.c"
         "network/captive_portal.c"
