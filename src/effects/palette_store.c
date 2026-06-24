@@ -731,7 +731,14 @@ esp_err_t json_palettes_post_handler(httpd_req_t *req)
     if (cJSON_IsString(action) && action->valuestring != NULL && strcmp(action->valuestring, "delete") == 0) {
         size_t target_slot = custom_palette_slot_from_id(palette_id);
         xSemaphoreTake(s_state_lock, portMAX_DELAY);
-        memset(&s_custom_palettes[target_slot], 0, sizeof(custom_palette_t));
+        /* Compact the custom slots: shift every following palette down one so
+           the freed slot ends up at the very end. This keeps existing palettes
+           contiguous and makes a newly added palette land after them rather
+           than back-filling the deleted hole. */
+        for (size_t slot = target_slot; slot + 1U < CUSTOM_PALETTE_SLOT_COUNT; ++slot) {
+            s_custom_palettes[slot] = s_custom_palettes[slot + 1U];
+        }
+        memset(&s_custom_palettes[CUSTOM_PALETTE_SLOT_COUNT - 1U], 0, sizeof(custom_palette_t));
         xSemaphoreGive(s_state_lock);
 
         cJSON_Delete(root);
