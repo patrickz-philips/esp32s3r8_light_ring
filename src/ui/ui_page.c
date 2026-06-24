@@ -191,6 +191,10 @@ static const char UI_PAGE_TAIL[] =
     "    const scenarioDetailTitle = document.getElementById('scenarioDetailTitle');\n"
     "    const scenarioDetailBody = document.getElementById('scenarioDetailBody');\n"
     "    const scenarioDetailCloseBtn = document.getElementById('scenarioDetailCloseBtn');\n"
+    "    const exportBackupBtn = document.getElementById('exportBackupBtn');\n"
+    "    const importBackupBtn = document.getElementById('importBackupBtn');\n"
+    "    const importBackupInput = document.getElementById('importBackupInput');\n"
+    "    const backupHint = document.getElementById('backupHint');\n"
     "    let lastOn = true;\n"
     "    let lastPaused = false;\n"
     "    let paletteCatalog = [];\n"
@@ -249,6 +253,8 @@ static const char UI_PAGE_TAIL[] =
     "    function closeSaveScenarioDialog() { if (scenarioSaveDialog && scenarioSaveDialog.open) scenarioSaveDialog.close(); }\n"
     "    async function confirmSaveScenario() { const name = (scenarioNameInput.value || '').trim(); if (!name) { scenarioNameInput.focus(); return; } const payload = { name, state: buildStatePayload() }; const response = await fetch('/json/scenarios', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); if (!response.ok) { scenarioNameInput.focus(); return; } closeSaveScenarioDialog(); await loadScenarios(); }\n"
     "    async function savePalette() { if (editingPaletteId === null) { editorHint.textContent = 'Select a custom palette before saving.'; return; } if (!editingStops.length) { editorHint.textContent = 'Add at least one color stop before saving.'; return; } const payload = { id: Number(editingPaletteId), name: customPaletteName.value.trim() || 'Custom Palette', circle: !!circlePaletteInput.checked, stops: editingStops.map(stop => [Number(stop.index), ...stop.rgb]) }; await fetch('/json/palettes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadPalettes(); await loadState(); loadPaletteEditor(editingPaletteId); }\n"
+    "    async function exportBackup() { if (backupHint) backupHint.textContent = 'Preparing backup...'; try { const response = await fetch('/json/backup'); if (!response.ok) throw new Error('Export failed'); const data = await response.json(); const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'); link.href = url; link.download = `light-ring-backup-${stamp}.json`; document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url); if (backupHint) backupHint.textContent = 'Backup downloaded.'; } catch (error) { if (backupHint) backupHint.textContent = error.message; } }\n"
+    "    async function importBackup(file) { if (!file) return; if (backupHint) backupHint.textContent = 'Importing backup...'; try { const text = await file.text(); const data = JSON.parse(text); const payload = { palettes: Array.isArray(data.palettes) ? data.palettes : [], scenarios: Array.isArray(data.scenarios) ? data.scenarios : [] }; const response = await fetch('/json/backup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); if (!response.ok) throw new Error('Import failed'); editingPaletteId = null; editingStops = []; await loadPalettes(); await loadScenarios(); await loadState(); if (backupHint) backupHint.textContent = 'Backup imported.'; } catch (error) { if (backupHint) backupHint.textContent = error.message; } }\n"
     "    document.getElementById('applyBtn').addEventListener('click', applyState);\n"
     "    saveScenarioBtn.addEventListener('click', openSaveScenarioDialog);\n"
     "    reloadScenariosBtn.addEventListener('click', () => loadScenarios().catch(error => { deviceInfo.textContent = error.message; }));\n"
@@ -277,6 +283,9 @@ static const char UI_PAGE_TAIL[] =
     "    [dialogRedInput, dialogGreenInput, dialogBlueInput].forEach(input => input.addEventListener('input', () => syncDialogFromRgb(dialogRgb())));\n"
     "    if (colorDialog) colorDialog.addEventListener('cancel', event => { event.preventDefault(); closeColorDialog(); });\n"
     "    reloadPalettesBtn.addEventListener('click', () => loadPalettes().then(loadState).catch(error => { deviceInfo.textContent = error.message; }));\n"
+    "    if (exportBackupBtn) exportBackupBtn.addEventListener('click', exportBackup);\n"
+    "    if (importBackupBtn) importBackupBtn.addEventListener('click', () => { if (importBackupInput) importBackupInput.click(); });\n"
+    "    if (importBackupInput) importBackupInput.addEventListener('change', event => { const file = event.target.files && event.target.files[0]; importBackup(file); event.target.value = ''; });\n"
     "    Promise.all([loadInfo(), loadPalettes(), loadScenarios()]).then(loadState).catch(error => { deviceInfo.textContent = error.message; });\n"
     "  </script>\n"
     "</body>\n"
@@ -291,6 +300,7 @@ esp_err_t ui_page_send(httpd_req_t *req)
     httpd_resp_send_chunk(req, UI_PAGE_COLUMN_BREAK, HTTPD_RESP_USE_STRLEN);
     httpd_resp_send_chunk(req, UI_SCENARIO_HTML, HTTPD_RESP_USE_STRLEN);
     httpd_resp_send_chunk(req, UI_PALETTE_EDITOR_HTML, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, UI_BACKUP_HTML, HTTPD_RESP_USE_STRLEN);
     httpd_resp_send_chunk(req, UI_PAGE_STRUCT_CLOSE, HTTPD_RESP_USE_STRLEN);
     httpd_resp_send_chunk(req, UI_PALETTE_DIALOG_HTML, HTTPD_RESP_USE_STRLEN);
     httpd_resp_send_chunk(req, UI_SCENARIO_DIALOGS_HTML, HTTPD_RESP_USE_STRLEN);

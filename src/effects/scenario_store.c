@@ -194,3 +194,81 @@ esp_err_t json_scenarios_post_handler(httpd_req_t *req)
     return ret;
 }
 
+cJSON *export_scenarios_json(void)
+{
+    cJSON *array = cJSON_CreateArray();
+    if (array == NULL) {
+        return NULL;
+    }
+
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    uint8_t count = s_scenario_count;
+    for (uint8_t index = 0U; index < count; ++index) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "name", s_scenarios[index].name);
+        cJSON *state = cJSON_Parse(s_scenarios[index].payload);
+        if (state == NULL) {
+            state = cJSON_CreateObject();
+        }
+        cJSON_AddItemToObject(item, "state", state);
+        cJSON_AddItemToArray(array, item);
+    }
+    xSemaphoreGive(s_state_lock);
+
+    return array;
+}
+
+esp_err_t import_scenarios_json(const cJSON *array)
+{
+    if (!cJSON_IsArray(array)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    scenario_t imported[SCENARIO_MAX_COUNT];
+    memset(imported, 0, sizeof(imported));
+    uint8_t imported_count = 0U;
+
+    const cJSON *entry = NULL;
+    cJSON_ArrayForEach(entry, array) {
+        if (imported_count >= SCENARIO_MAX_COUNT) {
+            break;
+        }
+        if (!cJSON_IsObject(entry)) {
+            continue;
+        }
+
+        cJSON *name = cJSON_GetObjectItemCaseSensitive(entry, "name");
+        cJSON *state = cJSON_GetObjectItemCaseSensitive(entry, "state");
+        if (!cJSON_IsObject(state)) {
+            continue;
+        }
+
+        char *payload = cJSON_PrintUnformatted(state);
+        if (payload == NULL) {
+            continue;
+        }
+        if (strlen(payload) >= SCENARIO_PAYLOAD_LENGTH) {
+            cJSON_free(payload);
+            continue;
+        }
+
+        scenario_t item;
+        memset(&item, 0, sizeof(item));
+        if (cJSON_IsString(name) && name->valuestring != NULL && name->valuestring[0] != '\0') {
+            strlcpy(item.name, name->valuestring, sizeof(item.name));
+        } else {
+            strlcpy(item.name, "Scenario", sizeof(item.name));
+        }
+        strlcpy(item.payload, payload, sizeof(item.payload));
+        cJSON_free(payload);
+        imported[imported_count++] = item;
+    }
+
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    memcpy(s_scenarios, imported, sizeof(s_scenarios));
+    s_scenario_count = imported_count;
+    xSemaphoreGive(s_state_lock);
+
+    return save_scenarios_to_nvs();
+}
+

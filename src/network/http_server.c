@@ -196,6 +196,76 @@ static esp_err_t win_get_handler(httpd_req_t *req)
     return ret;
 }
 
+static esp_err_t json_backup_get_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return httpd_resp_send_500(req);
+    }
+
+    cJSON_AddNumberToObject(root, "version", 1);
+    cJSON_AddItemToObject(root, "palettes", export_custom_palettes_json());
+    cJSON_AddItemToObject(root, "scenarios", export_scenarios_json());
+
+    esp_err_t ret = send_json_response(req, root);
+    cJSON_Delete(root);
+    return ret;
+}
+
+static esp_err_t json_backup_post_handler(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len >= BACKUP_MAX_BODY_SIZE) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Invalid body length");
+    }
+
+    char *body = malloc((size_t) req->content_len + 1U);
+    if (body == NULL) {
+        return httpd_resp_send_500(req);
+    }
+
+    int total_read = 0;
+    while (total_read < req->content_len) {
+        int read_now = httpd_req_recv(req, body + total_read, req->content_len - total_read);
+        if (read_now <= 0) {
+            free(body);
+            return httpd_resp_send_500(req);
+        }
+        total_read += read_now;
+    }
+    body[total_read] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (root == NULL) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "JSON parse failed");
+    }
+
+    cJSON *palettes = cJSON_GetObjectItemCaseSensitive(root, "palettes");
+    cJSON *scenarios = cJSON_GetObjectItemCaseSensitive(root, "scenarios");
+
+    esp_err_t palette_ret = ESP_OK;
+    esp_err_t scenario_ret = ESP_OK;
+    if (cJSON_IsArray(palettes)) {
+        palette_ret = import_custom_palettes_json(palettes);
+    }
+    if (cJSON_IsArray(scenarios)) {
+        scenario_ret = import_scenarios_json(scenarios);
+    }
+    cJSON_Delete(root);
+
+    if (palette_ret != ESP_OK || scenario_ret != ESP_OK) {
+        return httpd_resp_send_500(req);
+    }
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", true);
+    esp_err_t ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    return ret;
+}
+
 static esp_err_t register_uri(const char *uri, httpd_method_t method, esp_err_t (*handler)(httpd_req_t *))
 {
     const httpd_uri_t descriptor = {
@@ -225,6 +295,8 @@ esp_err_t start_http_server(void)
     ESP_RETURN_ON_ERROR(register_uri("/json/palettes", HTTP_POST, json_palettes_post_handler), TAG, "register palettes POST handler failed");
     ESP_RETURN_ON_ERROR(register_uri("/json/scenarios", HTTP_GET, json_scenarios_get_handler), TAG, "register scenarios GET handler failed");
     ESP_RETURN_ON_ERROR(register_uri("/json/scenarios", HTTP_POST, json_scenarios_post_handler), TAG, "register scenarios POST handler failed");
+    ESP_RETURN_ON_ERROR(register_uri("/json/backup", HTTP_GET, json_backup_get_handler), TAG, "register backup GET handler failed");
+    ESP_RETURN_ON_ERROR(register_uri("/json/backup", HTTP_POST, json_backup_post_handler), TAG, "register backup POST handler failed");
     ESP_RETURN_ON_ERROR(register_uri("/win", HTTP_GET, win_get_handler), TAG, "register win handler failed");
 
     ESP_RETURN_ON_ERROR(captive_portal_register_handlers(s_http_server), TAG, "register captive handlers failed");

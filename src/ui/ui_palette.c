@@ -36,6 +36,18 @@ const char UI_PALETTE_EDITOR_HTML[] =
     "          </div>\n"
     "        </div>\n";
 
+const char UI_BACKUP_HTML[] =
+    "        <div class=\"card\">\n"
+    "          <h2>Import / Export</h2>\n"
+    "          <p class=\"note\">Download every custom palette and scenario as a single JSON backup, or restore them from a file. Importing replaces the existing custom palettes and scenarios.</p>\n"
+    "          <div class=\"toolbar\">\n"
+    "            <button id=\"exportBackupBtn\" type=\"button\">Export Backup</button>\n"
+    "            <button id=\"importBackupBtn\" class=\"ghost\" type=\"button\">Import Backup</button>\n"
+    "          </div>\n"
+    "          <input id=\"importBackupInput\" type=\"file\" accept=\"application/json,.json\" style=\"display:none\">\n"
+    "          <p id=\"backupHint\" class=\"note\"></p>\n"
+    "        </div>\n";
+
 const char UI_PALETTE_DIALOG_HTML[] =
     "    <dialog id=\"colorDialog\" class=\"color-dialog\">\n"
     "      <div class=\"dialog-body\">\n"

@@ -771,3 +771,91 @@ esp_err_t json_palettes_post_handler(httpd_req_t *req)
     return ret;
 }
 
+cJSON *export_custom_palettes_json(void)
+{
+    cJSON *array = cJSON_CreateArray();
+    if (array == NULL) {
+        return NULL;
+    }
+
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    for (size_t slot = 0; slot < CUSTOM_PALETTE_SLOT_COUNT; ++slot) {
+        const custom_palette_t *palette = &s_custom_palettes[slot];
+        if (custom_palette_is_empty(palette)) {
+            continue;
+        }
+
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "id", (int) (CUSTOM_PALETTE_START_ID + slot));
+        cJSON_AddStringToObject(item, "name", palette->name);
+        cJSON_AddBoolToObject(item, "circle", custom_palette_is_circular(palette));
+        cJSON *stops = cJSON_AddArrayToObject(item, "stops");
+        serialize_palette_stops(stops, palette->stops, custom_palette_stop_count(palette));
+        cJSON_AddItemToArray(array, item);
+    }
+    xSemaphoreGive(s_state_lock);
+
+    return array;
+}
+
+esp_err_t import_custom_palettes_json(const cJSON *array)
+{
+    if (!cJSON_IsArray(array)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    custom_palette_t imported[CUSTOM_PALETTE_SLOT_COUNT];
+    memset(imported, 0, sizeof(imported));
+
+    const cJSON *entry = NULL;
+    cJSON_ArrayForEach(entry, array) {
+        if (!cJSON_IsObject(entry)) {
+            continue;
+        }
+
+        cJSON *id = cJSON_GetObjectItemCaseSensitive(entry, "id");
+        cJSON *name = cJSON_GetObjectItemCaseSensitive(entry, "name");
+        cJSON *circle = cJSON_GetObjectItemCaseSensitive(entry, "circle");
+        cJSON *stops = cJSON_GetObjectItemCaseSensitive(entry, "stops");
+        if (!cJSON_IsNumber(id)) {
+            continue;
+        }
+
+        uint8_t palette_id = clamp_palette(id->valueint);
+        if (!is_custom_palette_id(palette_id)) {
+            continue;
+        }
+
+        custom_palette_t palette = {0};
+        uint8_t stop_count = 0U;
+        if (!parse_palette_definition(stops, palette.stops, &stop_count)) {
+            continue;
+        }
+
+        custom_palette_set_stop_count(&palette, stop_count);
+
+        bool circle_enabled = false;
+        if (cJSON_IsBool(circle)) {
+            circle_enabled = cJSON_IsTrue(circle);
+        } else if (cJSON_IsNumber(circle)) {
+            circle_enabled = circle->valueint != 0;
+        }
+        custom_palette_set_circular(&palette, circle_enabled);
+
+        size_t slot = custom_palette_slot_from_id(palette_id);
+        if (cJSON_IsString(name) && name->valuestring != NULL && name->valuestring[0] != '\0') {
+            strlcpy(palette.name, name->valuestring, sizeof(palette.name));
+        } else {
+            snprintf(palette.name, sizeof(palette.name), "Custom %u", (unsigned) (slot + 1U));
+        }
+        rebuild_custom_palette_colors(&palette);
+        imported[slot] = palette;
+    }
+
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    memcpy(s_custom_palettes, imported, sizeof(s_custom_palettes));
+    xSemaphoreGive(s_state_lock);
+
+    return save_custom_palettes_to_nvs();
+}
+

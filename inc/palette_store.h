@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cJSON.h"
 #include "esp_err.h"
 #include "esp_http_server.h"
 
@@ -35,3 +36,6 @@ void sample_custom_palette_stops(const palette_stop_t *stops, size_t count, bool
 
 esp_err_t json_palettes_get_handler(httpd_req_t *req);
 esp_err_t json_palettes_post_handler(httpd_req_t *req);
+
+cJSON *export_custom_palettes_json(void);
+esp_err_t import_custom_palettes_json(const cJSON *array);
