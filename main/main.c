@@ -650,7 +650,7 @@ static const char INDEX_HTML[] =
     "    <div class=\"page\">\n"
     "      <div class=\"stack\">\n"
     "        <div class=\"card\">\n"
-    "          <h1>ESP32-S3R8 Light Ring</h1>\n"
+    "          <h1>Effect</h1>\n"
     "          <p>WLED-style ESP-IDF control surface with built-in and custom palettes for a 27-pixel ring on GPIO16.</p>\n"
     "          <div class=\"row\">\n"
     "            <button id=\"toggleBtn\">Toggle Power</button>\n"
