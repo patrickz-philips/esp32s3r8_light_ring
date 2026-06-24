@@ -37,7 +37,6 @@ const char UI_SCENARIO_DIALOGS_HTML[] =
     "        </div>\n"
     "        <div id=\"scenarioDetailBody\" class=\"scenario-detail-list\"></div>\n"
     "        <div class=\"dialog-actions\">\n"
-    "          <button id=\"scenarioDeleteBtn\" class=\"ghost danger\" type=\"button\">Delete</button>\n"
     "          <button id=\"scenarioDetailCloseBtn\" type=\"button\">Close</button>\n"
     "        </div>\n"
     "      </div>\n"
