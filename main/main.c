@@ -2130,10 +2130,14 @@ static void render_breathe_edge(const light_state_t *state, uint32_t frame)
     }
 
     /* The edge segment is anchored at the strip end (LEDs 26/27 on a 27-LED
-       ring); a larger edge length extends it back toward the start. */
-    uint16_t start = (uint16_t) (led_count - edge_len);
+       ring). Growing the edge keeps that base and splits the surplus around
+       the strip end: it extends back toward the start while wrapping the
+       remainder across the 27->1 seam (edge_len=4 lights LEDs 25,26,27,1). */
+    uint16_t wrap_count = (edge_len >= 2U) ? (uint16_t) ((edge_len - 2U) / 2U) : 0U;
+    uint16_t low_count = (uint16_t) (edge_len - wrap_count);
+    uint16_t start = (uint16_t) (led_count - low_count);
     for (uint8_t pos = 0; pos < edge_len; ++pos) {
-        uint16_t led = (uint16_t) (start + pos);
+        uint16_t led = (uint16_t) ((start + pos) % led_count);
         uint8_t palette_index = (edge_len > 1U)
                                     ? (uint8_t) (((uint16_t) pos * 255U) / (edge_len - 1U))
                                     : 0U;
