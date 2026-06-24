@@ -1,0 +1,25 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "hardware/board_led.c"
+        "hardware/led_strip_encoder.c"
+        "effects/light_effects.c"
+        "effects/palette_store.c"
+        "effects/scenario_store.c"
+        "network/wifi_manager.c"
+        "network/captive_portal.c"
+        "network/http_server.c"
+        "ui/ui_page.c"
+        "ui/ui_effect.c"
+        "ui/ui_palette.c"
+        "ui/ui_scenario.c"
+    PRIV_REQUIRES
+        esp_driver_rmt
+        esp_event
+        esp_http_server
+        esp_netif
+        esp_wifi
+        json
+        nvs_flash
+    INCLUDE_DIRS
+        "../inc")
