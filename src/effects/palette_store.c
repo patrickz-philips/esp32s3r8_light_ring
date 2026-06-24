@@ -92,50 +92,6 @@ static const builtin_palette_t s_builtin_palettes[BUILTIN_PALETTE_COUNT] = {
 static const custom_palette_t s_default_custom_palettes[CUSTOM_PALETTE_SLOT_COUNT] = {
     {
         .stop_count = 5,
-        .name = "Cotton Candy",
-        .stops = {
-            {0, 48, 11, 94},
-            {64, 114, 9, 183},
-            {128, 255, 0, 110},
-            {192, 255, 190, 11},
-            {255, 255, 244, 214},
-        },
-    },
-    {
-        .stop_count = 5,
-        .name = "Aurora Mist",
-        .stops = {
-            {0, 0, 24, 64},
-            {64, 0, 104, 160},
-            {128, 0, 208, 160},
-            {192, 96, 255, 196},
-            {255, 236, 255, 248},
-        },
-    },
-    {
-        .stop_count = 5,
-        .name = "Ember Trail",
-        .stops = {
-            {0, 12, 4, 24},
-            {64, 96, 8, 32},
-            {128, 220, 44, 0},
-            {192, 255, 140, 0},
-            {255, 255, 236, 180},
-        },
-    },
-    {
-        .stop_count = 5,
-        .name = "Neon Mint",
-        .stops = {
-            {0, 4, 8, 32},
-            {64, 0, 72, 96},
-            {128, 0, 255, 170},
-            {192, 160, 255, 96},
-            {255, 250, 255, 224},
-        },
-    },
-    {
-        .stop_count = 5,
         .name = "Good Morning",
         .stops = {
             {0, 105, 109, 118},
