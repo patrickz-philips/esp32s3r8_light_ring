@@ -38,6 +38,11 @@
 #define PALETTE_COUNT               (CUSTOM_PALETTE_START_ID + CUSTOM_PALETTE_SLOT_COUNT)
 #define PALETTE_NVS_NAMESPACE       "palettes"
 #define PALETTE_NVS_KEY             "catalog2"
+#define SCENARIO_NVS_NAMESPACE      "scenarios"
+#define SCENARIO_NVS_COUNT_KEY      "count"
+#define SCENARIO_MAX_COUNT          12U
+#define SCENARIO_NAME_LENGTH        32U
+#define SCENARIO_PAYLOAD_LENGTH     768U
 #define CUSTOM_PALETTE_CIRCULAR_FLAG 0x80U
 #define CUSTOM_PALETTE_STOP_COUNT_MASK 0x7FU
 #define SWOOSH_PATH_LENGTH          ((CONFIG_LIGHT_RING_LED_COUNT + 1U) / 2U)
@@ -152,6 +157,14 @@ static char s_sta_ip[16];
 static bool s_sta_connected;
 static esp_ip4_addr_t s_ap_ip;
 static custom_palette_t s_custom_palettes[CUSTOM_PALETTE_SLOT_COUNT];
+
+typedef struct {
+    char name[SCENARIO_NAME_LENGTH];
+    char payload[SCENARIO_PAYLOAD_LENGTH];
+} scenario_t;
+
+static scenario_t s_scenarios[SCENARIO_MAX_COUNT];
+static uint8_t s_scenario_count;
 
 // WLED-inspired fixed palettes sampled with a 16-entry blended lookup.
 static const builtin_palette_t s_builtin_palettes[BUILTIN_PALETTE_COUNT] = {
@@ -574,6 +587,67 @@ static esp_err_t save_custom_palettes_to_nvs(void)
     return ret;
 }
 
+static esp_err_t load_scenarios_from_nvs(void)
+{
+    s_scenario_count = 0U;
+    memset(s_scenarios, 0, sizeof(s_scenarios));
+
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(SCENARIO_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (ret == ESP_ERR_NVS_NOT_FOUND) {
+        return ESP_OK;
+    }
+    ESP_RETURN_ON_ERROR(ret, TAG, "open scenario namespace failed");
+
+    uint8_t stored_count = 0U;
+    ret = nvs_get_u8(handle, SCENARIO_NVS_COUNT_KEY, &stored_count);
+    if (ret == ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(handle);
+        return ESP_OK;
+    }
+    if (ret != ESP_OK) {
+        nvs_close(handle);
+        ESP_RETURN_ON_ERROR(ret, TAG, "read scenario count failed");
+    }
+
+    if (stored_count > SCENARIO_MAX_COUNT) {
+        stored_count = SCENARIO_MAX_COUNT;
+    }
+
+    for (uint8_t index = 0U; index < stored_count; ++index) {
+        char key[12];
+        snprintf(key, sizeof(key), "s%u", (unsigned) index);
+        size_t size = sizeof(scenario_t);
+        if (nvs_get_blob(handle, key, &s_scenarios[s_scenario_count], &size) == ESP_OK) {
+            s_scenarios[s_scenario_count].name[SCENARIO_NAME_LENGTH - 1U] = '\0';
+            s_scenarios[s_scenario_count].payload[SCENARIO_PAYLOAD_LENGTH - 1U] = '\0';
+            s_scenario_count++;
+        }
+    }
+
+    nvs_close(handle);
+    return ESP_OK;
+}
+
+static esp_err_t save_scenarios_to_nvs(void)
+{
+    nvs_handle_t handle;
+    ESP_RETURN_ON_ERROR(nvs_open(SCENARIO_NVS_NAMESPACE, NVS_READWRITE, &handle), TAG, "open scenario namespace failed");
+
+    esp_err_t ret = nvs_set_u8(handle, SCENARIO_NVS_COUNT_KEY, s_scenario_count);
+    for (uint8_t index = 0U; ret == ESP_OK && index < s_scenario_count; ++index) {
+        char key[12];
+        snprintf(key, sizeof(key), "s%u", (unsigned) index);
+        ret = nvs_set_blob(handle, key, &s_scenarios[index], sizeof(scenario_t));
+    }
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+    return ret;
+}
+
 static const char INDEX_HTML[] =
     "<!doctype html>\n"
     "<html lang=\"en\">\n"
@@ -641,6 +715,17 @@ static const char INDEX_HTML[] =
     "    label.toggle-row { display:flex; align-items:center; gap:10px; margin:0; padding:14px 16px; border:1px solid var(--line); border-radius:16px; background:rgba(255,255,255,0.76); }\n"
     "    label.toggle-row span { font-size:14px; text-transform:uppercase; letter-spacing:0.08em; }\n"
     "    .stop-row button { width:auto; }\n"
+    "    .scenario-list { display:grid; gap:10px; }\n"
+    "    .scenario-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; border:1px solid var(--line); border-radius:14px; background:rgba(255,255,255,0.78); cursor:pointer; user-select:none; transition:border-color 0.15s ease; }\n"
+    "    .scenario-row:hover { border-color:#ff7810; }\n"
+    "    .scenario-name { display:flex; flex-direction:column; gap:3px; min-width:0; }\n"
+    "    .scenario-name strong { font-size:15px; word-break:break-word; }\n"
+    "    .scenario-name span { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; }\n"
+    "    .scenario-row button.scenario-info { width:auto; padding:8px 14px; flex:0 0 auto; }\n"
+    "    .scenario-detail-list { display:grid; gap:10px; }\n"
+    "    .detail-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:#fffaf4; }\n"
+    "    .detail-row span { color:var(--muted); font-size:13px; }\n"
+    "    #scenarioNameInput { text-transform:none; }\n"
     "    @media (max-width: 880px) { .page { grid-template-columns:1fr; } .actions { justify-content:flex-start; } }\n"
     "    @media (max-width: 640px) { .row.editor-options { flex-direction:column; } .editor-options > .toggle-row { flex:1 1 auto; } .stop-row { grid-template-columns:1fr; } .dialog-grid { grid-template-columns:1fr; } }\n"
     "  </style>\n"
@@ -688,7 +773,7 @@ static const char INDEX_HTML[] =
     "          </div>\n"
     "          <div class=\"grid\">\n"
     "            <button id=\"applyBtn\">Apply State</button>\n"
-    "            <button id=\"refreshBtn\" class=\"secondary\">Refresh State</button>\n"
+    "            <button id=\"saveScenarioBtn\" class=\"secondary\">Save Scenario</button>\n"
     "          </div>\n"
     "          <p id=\"deviceInfo\" class=\"pill\">Loading device info...</p>\n"
     "          <p>API: <code>/json/state</code>, <code>/json/info</code>, <code>/json/palettes</code>, <code>/win</code></p>\n"
@@ -708,6 +793,19 @@ static const char INDEX_HTML[] =
     "        </div>\n"
     "      </div>\n"
     "      <div class=\"stack\">\n"
+    "        <div class=\"card\">\n"
+    "          <div class=\"editor-header\">\n"
+    "            <div>\n"
+    "              <h2>Scenarios</h2>\n"
+    "              <p class=\"note\">Double-click a scenario to apply it to the Effect panel. Use Details to inspect its parameters.</p>\n"
+    "            </div>\n"
+    "            <div class=\"actions\">\n"
+    "              <button id=\"reloadScenariosBtn\" class=\"ghost\" type=\"button\">Reload</button>\n"
+    "            </div>\n"
+    "          </div>\n"
+    "          <div id=\"scenarioList\" class=\"scenario-list\"></div>\n"
+    "          <p id=\"scenarioHint\" class=\"note\">No scenarios saved yet. Configure the Effect panel, then press Save Scenario.</p>\n"
+    "        </div>\n"
     "        <div class=\"card\">\n"
     "          <h2>Custom Palette Editor</h2>\n"
     "          <p id=\"editorHint\" class=\"note\">Select a custom palette card to edit its color stops.</p>\n"
@@ -745,6 +843,31 @@ static const char INDEX_HTML[] =
     "        <div class=\"dialog-actions\">\n"
     "          <button id=\"dialogCancelBtn\" class=\"ghost\" type=\"button\">Cancel</button>\n"
     "          <button id=\"dialogApplyBtn\" type=\"button\">Apply Color</button>\n"
+    "        </div>\n"
+    "      </div>\n"
+    "    </dialog>\n"
+    "    <dialog id=\"scenarioSaveDialog\" class=\"color-dialog\">\n"
+    "      <div class=\"dialog-body\">\n"
+    "        <div>\n"
+    "          <h2>Save Scenario</h2>\n"
+    "          <p class=\"note\">Name this scenario to store the current Effect settings.</p>\n"
+    "        </div>\n"
+    "        <div><label for=\"scenarioNameInput\">Scenario Name</label><input id=\"scenarioNameInput\" type=\"text\" maxlength=\"31\" placeholder=\"e.g. Sunset Glow\" spellcheck=\"false\"></div>\n"
+    "        <div class=\"dialog-actions\">\n"
+    "          <button id=\"scenarioSaveCancelBtn\" class=\"ghost\" type=\"button\">Cancel</button>\n"
+    "          <button id=\"scenarioSaveConfirmBtn\" type=\"button\">Save</button>\n"
+    "        </div>\n"
+    "      </div>\n"
+    "    </dialog>\n"
+    "    <dialog id=\"scenarioDetailDialog\" class=\"color-dialog\">\n"
+    "      <div class=\"dialog-body\">\n"
+    "        <div>\n"
+    "          <h2 id=\"scenarioDetailTitle\">Scenario</h2>\n"
+    "          <p class=\"note\">Key parameters for this saved scenario.</p>\n"
+    "        </div>\n"
+    "        <div id=\"scenarioDetailBody\" class=\"scenario-detail-list\"></div>\n"
+    "        <div class=\"dialog-actions\">\n"
+    "          <button id=\"scenarioDetailCloseBtn\" type=\"button\">Close</button>\n"
     "        </div>\n"
     "      </div>\n"
     "    </dialog>\n"
@@ -823,9 +946,22 @@ static const char INDEX_HTML[] =
     "    const dialogBlueInput = document.getElementById('dialogBlueInput');\n"
     "    const dialogCancelBtn = document.getElementById('dialogCancelBtn');\n"
     "    const dialogApplyBtn = document.getElementById('dialogApplyBtn');\n"
+    "    const saveScenarioBtn = document.getElementById('saveScenarioBtn');\n"
+    "    const reloadScenariosBtn = document.getElementById('reloadScenariosBtn');\n"
+    "    const scenarioList = document.getElementById('scenarioList');\n"
+    "    const scenarioHint = document.getElementById('scenarioHint');\n"
+    "    const scenarioSaveDialog = document.getElementById('scenarioSaveDialog');\n"
+    "    const scenarioNameInput = document.getElementById('scenarioNameInput');\n"
+    "    const scenarioSaveCancelBtn = document.getElementById('scenarioSaveCancelBtn');\n"
+    "    const scenarioSaveConfirmBtn = document.getElementById('scenarioSaveConfirmBtn');\n"
+    "    const scenarioDetailDialog = document.getElementById('scenarioDetailDialog');\n"
+    "    const scenarioDetailTitle = document.getElementById('scenarioDetailTitle');\n"
+    "    const scenarioDetailBody = document.getElementById('scenarioDetailBody');\n"
+    "    const scenarioDetailCloseBtn = document.getElementById('scenarioDetailCloseBtn');\n"
     "    let lastOn = true;\n"
     "    let lastPaused = false;\n"
     "    let paletteCatalog = [];\n"
+    "    let scenarios = [];\n"
     "    let selectedPaletteId = 0;\n"
     "    let editingPaletteId = null;\n"
     "    let editingStops = [];\n"
@@ -865,10 +1001,30 @@ static const char INDEX_HTML[] =
     "    async function loadPalettes() { const response = await fetch('/json/palettes'); const json = await response.json(); paletteCatalog = Array.isArray(json.items) ? json.items : []; renderPaletteSelect(); renderPaletteGallery(); if (editingPaletteId !== null) { loadPaletteEditor(editingPaletteId); } else { renderStopEditor(); } }\n"
     "    function updateSuspendButtonLabel() { suspendBtn.textContent = lastPaused ? 'Resume' : 'Suspend'; }\n"
     "    async function loadState() { const response = await fetch('/json/state'); const state = await response.json(); const seg = state.seg && state.seg[0] ? state.seg[0] : {}; const color = seg.col && seg.col[0] ? seg.col[0] : state.color; lastOn = !!state.on; lastPaused = !!state.paused; selectedPaletteId = Number(seg.pal ?? state.pal ?? state.palette ?? 0); updateSuspendButtonLabel(); brightnessInput.value = state.bri ?? 0; speedInput.value = seg.sx ?? state.speed ?? 128; effectInput.value = seg.fx ?? state.fx ?? 0; swooshBgPaletteInput.value = String(seg.bgPal ?? state.bgPal ?? 0); swooshLeftPaletteInput.value = String(seg.leftPal ?? state.leftPal ?? 0); swooshRightPaletteInput.value = String(seg.rightPal ?? state.rightPal ?? 0); sideLengthInput.value = String(seg.leftStops ?? state.leftStops ?? 5); if (shrinkBgPaletteInput) shrinkBgPaletteInput.value = String(seg.shrinkBg ?? state.shrinkBg ?? 0); if (shrinkBarPaletteInput) shrinkBarPaletteInput.value = String(seg.shrinkBar ?? state.shrinkBar ?? 0); if (shrinkLenInput) shrinkLenInput.value = String(seg.shrinkLen ?? state.shrinkLen ?? 4); if (shrinkGapInput) shrinkGapInput.value = String(seg.shrinkGap ?? state.shrinkGap ?? 6); if (rotationBgPaletteInput) rotationBgPaletteInput.value = String(seg.rotBg ?? state.rotBg ?? 0); if (rotationPaletteInput) rotationPaletteInput.value = String(seg.rotPal ?? state.rotPal ?? 0); if (rotationLenInput) rotationLenInput.value = String(seg.rotLen ?? state.rotLen ?? 2); if (rotationGapInput) rotationGapInput.value = String(seg.rotGap ?? state.rotGap ?? 6); if (rotationCcwInput) rotationCcwInput.checked = !!(seg.rotCcw ?? state.rotCcw ?? false); if (pointPaletteInput) pointPaletteInput.value = String(seg.ptPal ?? state.ptPal ?? 0); if (pointBgPaletteInput) pointBgPaletteInput.value = String(seg.ptBg ?? state.ptBg ?? 0); if (pointLenInput) pointLenInput.value = String(seg.ptLen ?? state.ptLen ?? 3); if (pointTotalInput) pointTotalInput.value = String(seg.ptTotal ?? state.ptTotal ?? 14); if (pointModeInput) pointModeInput.value = String(seg.ptMode ?? state.ptMode ?? 1); if (pointGapInput) pointGapInput.value = String(seg.ptGap ?? state.ptGap ?? 8); if (edgePaletteInput) edgePaletteInput.value = String(seg.edgePal ?? state.edgePal ?? 0); if (edgeLenInput) edgeLenInput.value = String(seg.edgeLen ?? state.edgeLen ?? 2); if (edgeModeInput) edgeModeInput.value = String(seg.edgeMode ?? state.edgeMode ?? 1); if (edgeGapInput) edgeGapInput.value = String(seg.edgeGap ?? state.edgeGap ?? 8); updateEffectControls(); if (paletteInput) paletteInput.value = String(selectedPaletteId); activatePaletteCard(selectedPaletteId); const selected = paletteCatalog.find(item => Number(item.id) === Number(selectedPaletteId)); if (selected && selected.editable) { if (editingPaletteId !== selected.id) loadPaletteEditor(selected.id); } else { editingPaletteId = null; editingStops = []; renderStopEditor(); } if (Array.isArray(color)) { colorInput.value = rgbToHex(color); } }\n"
-    "    async function applyState() { const [r, g, b] = hexToRgb(colorInput.value); const payload = { on: true, paused: false, bri: Number(brightnessInput.value), color: [r, g, b], effect: Number(effectInput.value), speed: Number(speedInput.value), palette: Number(paletteInput.value), bgPal: Number(swooshBgPaletteInput.value), leftPal: Number(swooshLeftPaletteInput.value), rightPal: Number(swooshRightPaletteInput.value), leftStops: Number(sideLengthInput.value), rightStops: Number(sideLengthInput.value), shrinkBg: Number(shrinkBgPaletteInput.value), shrinkBar: Number(shrinkBarPaletteInput.value), shrinkLen: Number(shrinkLenInput.value), shrinkGap: Number(shrinkGapInput.value), rotBg: Number(rotationBgPaletteInput.value), rotPal: Number(rotationPaletteInput.value), rotLen: Number(rotationLenInput.value), rotGap: Number(rotationGapInput.value), rotCcw: !!rotationCcwInput.checked, ptPal: Number(pointPaletteInput.value), ptBg: Number(pointBgPaletteInput.value), ptLen: Number(pointLenInput.value), ptTotal: Number(pointTotalInput.value), ptMode: Number(pointModeInput.value), ptGap: Number(pointGapInput.value), edgePal: Number(edgePaletteInput.value), edgeLen: Number(edgeLenInput.value), edgeMode: Number(edgeModeInput.value), edgeGap: Number(edgeGapInput.value) }; await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
+    "    async function applyState() { const payload = buildStatePayload(); await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
+    "    function buildStatePayload() { const [r, g, b] = hexToRgb(colorInput.value); return { on: true, paused: false, bri: Number(brightnessInput.value), color: [r, g, b], effect: Number(effectInput.value), speed: Number(speedInput.value), palette: Number(paletteInput.value), bgPal: Number(swooshBgPaletteInput.value), leftPal: Number(swooshLeftPaletteInput.value), rightPal: Number(swooshRightPaletteInput.value), leftStops: Number(sideLengthInput.value), rightStops: Number(sideLengthInput.value), shrinkBg: Number(shrinkBgPaletteInput.value), shrinkBar: Number(shrinkBarPaletteInput.value), shrinkLen: Number(shrinkLenInput.value), shrinkGap: Number(shrinkGapInput.value), rotBg: Number(rotationBgPaletteInput.value), rotPal: Number(rotationPaletteInput.value), rotLen: Number(rotationLenInput.value), rotGap: Number(rotationGapInput.value), rotCcw: !!rotationCcwInput.checked, ptPal: Number(pointPaletteInput.value), ptBg: Number(pointBgPaletteInput.value), ptLen: Number(pointLenInput.value), ptTotal: Number(pointTotalInput.value), ptMode: Number(pointModeInput.value), ptGap: Number(pointGapInput.value), edgePal: Number(edgePaletteInput.value), edgeLen: Number(edgeLenInput.value), edgeMode: Number(edgeModeInput.value), edgeGap: Number(edgeGapInput.value) }; }\n"
+    "    function escapeHtml(value) { return String(value ?? '').replace(/[&<>\"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[ch])); }\n"
+    "    function effectName(id) { const opt = effectInput ? [...effectInput.options].find(option => Number(option.value) === Number(id)) : null; return opt ? opt.textContent : `Effect ${id}`; }\n"
+    "    function paletteName(id) { const item = paletteCatalog.find(entry => Number(entry.id) === Number(id)); return item ? item.name : `Palette ${id}`; }\n"
+    "    function scenarioDetailLines(state) { const lines = []; const add = (label, value) => lines.push({ label, value }); add('Effect', effectName(state.effect)); add('Brightness', state.bri); add('Speed (flow speed)', state.speed); const fx = Number(state.effect); if (fx === 8 || fx === 9) { add('Background Palette', paletteName(state.bgPal)); add('Left Palette', paletteName(state.leftPal)); add('Right Palette', paletteName(state.rightPal)); add('Side Palette Length', state.leftStops); } else if (fx === 10) { add('Background Palette', paletteName(state.shrinkBg)); add('Bar Palette', paletteName(state.shrinkBar)); add('Shrink Length', state.shrinkLen); add('Gap (timing)', state.shrinkGap); } else if (fx === 11) { add('Background Palette', paletteName(state.rotBg)); add('Rotation Palette', paletteName(state.rotPal)); add('Rotation Length', state.rotLen); add('Gap (timing)', state.rotGap); add('Counterclockwise', state.rotCcw ? 'Yes' : 'No'); } else if (fx === 12) { add('Point Palette', paletteName(state.ptPal)); add('Background Palette', paletteName(state.ptBg)); add('Point Length', state.ptLen); add('Total Length', state.ptTotal); add('Repeat', state.ptMode); add('Gap (timing)', state.ptGap); } else if (fx === 13) { add('Edge Palette', paletteName(state.edgePal)); add('Edge Length', state.edgeLen); add('Repeat', state.edgeMode); add('Gap (timing)', state.edgeGap); } else { add('Color Palette', paletteName(state.palette)); add('Primary Color', Array.isArray(state.color) ? rgbToHex(state.color).toUpperCase() : '-'); } return lines; }\n"
+    "    function renderScenarios() { if (!scenarioList) return; scenarioList.innerHTML = ''; if (scenarioHint) scenarioHint.style.display = scenarios.length ? 'none' : ''; scenarios.forEach(item => { const row = document.createElement('div'); row.className = 'scenario-row'; row.dataset.id = item.id; row.title = 'Double-click to apply'; const label = document.createElement('div'); label.className = 'scenario-name'; label.innerHTML = `<strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(effectName(item.state.effect))}</span>`; const info = document.createElement('button'); info.type = 'button'; info.className = 'ghost scenario-info'; info.textContent = 'Details'; info.addEventListener('click', event => { event.stopPropagation(); showScenarioDetail(item.id); }); row.append(label, info); row.addEventListener('dblclick', () => applyScenario(item.id)); scenarioList.appendChild(row); }); }\n"
+    "    async function loadScenarios() { const response = await fetch('/json/scenarios'); const json = await response.json(); scenarios = Array.isArray(json.items) ? json.items.map(item => ({ id: item.id, name: item.name, state: item.state || {} })) : []; renderScenarios(); }\n"
+    "    async function applyScenario(id) { const item = scenarios.find(entry => Number(entry.id) === Number(id)); if (!item) return; const payload = Object.assign({}, item.state, { on: true, paused: false }); await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadState(); }\n"
+    "    function showScenarioDetail(id) { const item = scenarios.find(entry => Number(entry.id) === Number(id)); if (!item || !scenarioDetailDialog) return; scenarioDetailTitle.textContent = item.name; scenarioDetailBody.innerHTML = scenarioDetailLines(item.state).map(line => `<div class=\"detail-row\"><span>${escapeHtml(line.label)}</span><strong>${escapeHtml(line.value)}</strong></div>`).join(''); if (typeof scenarioDetailDialog.showModal === 'function') scenarioDetailDialog.showModal(); }\n"
+    "    function closeScenarioDetail() { if (scenarioDetailDialog && scenarioDetailDialog.open) scenarioDetailDialog.close(); }\n"
+    "    function openSaveScenarioDialog() { if (!scenarioSaveDialog) return; scenarioNameInput.value = ''; if (typeof scenarioSaveDialog.showModal === 'function') scenarioSaveDialog.showModal(); scenarioNameInput.focus(); }\n"
+    "    function closeSaveScenarioDialog() { if (scenarioSaveDialog && scenarioSaveDialog.open) scenarioSaveDialog.close(); }\n"
+    "    async function confirmSaveScenario() { const name = (scenarioNameInput.value || '').trim(); if (!name) { scenarioNameInput.focus(); return; } const payload = { name, state: buildStatePayload() }; const response = await fetch('/json/scenarios', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); if (!response.ok) { scenarioNameInput.focus(); return; } closeSaveScenarioDialog(); await loadScenarios(); }\n"
     "    async function savePalette() { if (editingPaletteId === null) { editorHint.textContent = 'Select a custom palette before saving.'; return; } if (!editingStops.length) { editorHint.textContent = 'Add at least one color stop before saving.'; return; } const payload = { id: Number(editingPaletteId), name: customPaletteName.value.trim() || 'Custom Palette', circle: !!circlePaletteInput.checked, stops: editingStops.map(stop => [Number(stop.index), ...stop.rgb]) }; await fetch('/json/palettes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); await loadPalettes(); await loadState(); loadPaletteEditor(editingPaletteId); }\n"
     "    document.getElementById('applyBtn').addEventListener('click', applyState);\n"
-    "    document.getElementById('refreshBtn').addEventListener('click', loadState);\n"
+    "    saveScenarioBtn.addEventListener('click', openSaveScenarioDialog);\n"
+    "    reloadScenariosBtn.addEventListener('click', () => loadScenarios().catch(error => { deviceInfo.textContent = error.message; }));\n"
+    "    scenarioSaveCancelBtn.addEventListener('click', closeSaveScenarioDialog);\n"
+    "    scenarioSaveConfirmBtn.addEventListener('click', confirmSaveScenario);\n"
+    "    scenarioNameInput.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); confirmSaveScenario(); } });\n"
+    "    scenarioDetailCloseBtn.addEventListener('click', closeScenarioDetail);\n"
+    "    if (scenarioSaveDialog) scenarioSaveDialog.addEventListener('cancel', event => { event.preventDefault(); closeSaveScenarioDialog(); });\n"
+    "    if (scenarioDetailDialog) scenarioDetailDialog.addEventListener('cancel', event => { event.preventDefault(); closeScenarioDetail(); });\n"
     "    document.getElementById('toggleBtn').addEventListener('click', async () => { await fetch(`/win?T=${lastOn ? 0 : 1}`); await loadState(); });\n"
     "    suspendBtn.addEventListener('click', async () => { await fetch('/json/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paused: !lastPaused }) }); await loadState(); });\n"
     "    effectInput.addEventListener('change', updateEffectControls);\n"
@@ -888,7 +1044,7 @@ static const char INDEX_HTML[] =
     "    [dialogRedInput, dialogGreenInput, dialogBlueInput].forEach(input => input.addEventListener('input', () => syncDialogFromRgb(dialogRgb())));\n"
     "    if (colorDialog) colorDialog.addEventListener('cancel', event => { event.preventDefault(); closeColorDialog(); });\n"
     "    reloadPalettesBtn.addEventListener('click', () => loadPalettes().then(loadState).catch(error => { deviceInfo.textContent = error.message; }));\n"
-    "    Promise.all([loadInfo(), loadPalettes()]).then(loadState).catch(error => { deviceInfo.textContent = error.message; });\n"
+    "    Promise.all([loadInfo(), loadPalettes(), loadScenarios()]).then(loadState).catch(error => { deviceInfo.textContent = error.message; });\n"
     "  </script>\n"
     "</body>\n"
     "</html>\n";
@@ -3102,6 +3258,116 @@ static esp_err_t json_palettes_post_handler(httpd_req_t *req)
     return ret;
 }
 
+static cJSON *build_scenarios_json(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *items = cJSON_AddArrayToObject(root, "items");
+
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    uint8_t count = s_scenario_count;
+    for (uint8_t index = 0U; index < count; ++index) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "id", index);
+        cJSON_AddStringToObject(item, "name", s_scenarios[index].name);
+        cJSON *state = cJSON_Parse(s_scenarios[index].payload);
+        if (state == NULL) {
+            state = cJSON_CreateObject();
+        }
+        cJSON_AddItemToObject(item, "state", state);
+        cJSON_AddItemToArray(items, item);
+    }
+    xSemaphoreGive(s_state_lock);
+
+    return root;
+}
+
+static esp_err_t json_scenarios_get_handler(httpd_req_t *req)
+{
+    cJSON *scenarios = build_scenarios_json();
+    esp_err_t ret = send_json_response(req, scenarios);
+    cJSON_Delete(scenarios);
+    return ret;
+}
+
+static esp_err_t json_scenarios_post_handler(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len >= HTTP_RECV_BUFFER_SIZE) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Invalid body length");
+    }
+
+    char body[HTTP_RECV_BUFFER_SIZE];
+    int total_read = 0;
+    while (total_read < req->content_len) {
+        int read_now = httpd_req_recv(req, body + total_read, req->content_len - total_read);
+        if (read_now <= 0) {
+            return httpd_resp_send_500(req);
+        }
+        total_read += read_now;
+    }
+    body[total_read] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "JSON parse failed");
+    }
+
+    cJSON *name = cJSON_GetObjectItemCaseSensitive(root, "name");
+    cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
+    if (!cJSON_IsObject(state)) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Scenario state is required");
+    }
+
+    char *payload = cJSON_PrintUnformatted(state);
+    if (payload == NULL) {
+        cJSON_Delete(root);
+        return httpd_resp_send_500(req);
+    }
+    if (strlen(payload) >= SCENARIO_PAYLOAD_LENGTH) {
+        cJSON_free(payload);
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Scenario state is too large");
+    }
+
+    scenario_t entry;
+    memset(&entry, 0, sizeof(entry));
+    if (cJSON_IsString(name) && name->valuestring != NULL && name->valuestring[0] != '\0') {
+        strlcpy(entry.name, name->valuestring, sizeof(entry.name));
+    } else {
+        strlcpy(entry.name, "Scenario", sizeof(entry.name));
+    }
+    strlcpy(entry.payload, payload, sizeof(entry.payload));
+    cJSON_free(payload);
+    cJSON_Delete(root);
+
+    bool full = false;
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    if (s_scenario_count >= SCENARIO_MAX_COUNT) {
+        full = true;
+    } else {
+        s_scenarios[s_scenario_count++] = entry;
+    }
+    xSemaphoreGive(s_state_lock);
+
+    if (full) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Scenario storage is full");
+    }
+
+    if (save_scenarios_to_nvs() != ESP_OK) {
+        return httpd_resp_send_500(req);
+    }
+
+    cJSON *response = build_scenarios_json();
+    esp_err_t ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    return ret;
+}
+
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
     set_common_response_headers(req, "text/html; charset=utf-8");
@@ -3336,6 +3602,16 @@ static esp_err_t start_http_server(void)
         .method = HTTP_POST,
         .handler = json_palettes_post_handler,
     };
+    const httpd_uri_t json_scenarios_get = {
+        .uri = "/json/scenarios",
+        .method = HTTP_GET,
+        .handler = json_scenarios_get_handler,
+    };
+    const httpd_uri_t json_scenarios_post = {
+        .uri = "/json/scenarios",
+        .method = HTTP_POST,
+        .handler = json_scenarios_post_handler,
+    };
     const httpd_uri_t win = {
         .uri = "/win",
         .method = HTTP_GET,
@@ -3383,6 +3659,8 @@ static esp_err_t start_http_server(void)
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_state_post), TAG, "register state POST handler failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_palettes_get), TAG, "register palettes GET handler failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_palettes_post), TAG, "register palettes POST handler failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_scenarios_get), TAG, "register scenarios GET handler failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &json_scenarios_post), TAG, "register scenarios POST handler failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &win), TAG, "register win handler failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &captive_hotspot_detect), TAG, "register captive hotspot handler failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_http_server, &captive_generate_204), TAG, "register captive generate_204 handler failed");
@@ -3412,6 +3690,7 @@ void app_main(void)
     s_state_lock = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_state_lock != NULL ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(load_custom_palettes_from_nvs());
+    ESP_ERROR_CHECK(load_scenarios_from_nvs());
 
     build_device_identity();
 
