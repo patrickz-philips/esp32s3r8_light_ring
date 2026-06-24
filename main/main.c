@@ -30,14 +30,14 @@
 #define HTTP_RECV_BUFFER_SIZE       2048
 #define AP_MAX_STA_CONNECTIONS      4
 #define PALETTE_ENTRY_COUNT         16U
-#define BUILTIN_PALETTE_COUNT       9U
-#define CUSTOM_PALETTE_SLOT_COUNT   8U
+#define BUILTIN_PALETTE_COUNT       7U
+#define CUSTOM_PALETTE_SLOT_COUNT   14U
 #define CUSTOM_PALETTE_MAX_STOPS    27U
 #define PALETTE_NAME_LENGTH         24U
 #define CUSTOM_PALETTE_START_ID     (1U + BUILTIN_PALETTE_COUNT)
 #define PALETTE_COUNT               (CUSTOM_PALETTE_START_ID + CUSTOM_PALETTE_SLOT_COUNT)
 #define PALETTE_NVS_NAMESPACE       "palettes"
-#define PALETTE_NVS_KEY             "catalog"
+#define PALETTE_NVS_KEY             "catalog2"
 #define CUSTOM_PALETTE_CIRCULAR_FLAG 0x80U
 #define CUSTOM_PALETTE_STOP_COUNT_MASK 0x7FU
 #define SWOOSH_PATH_LENGTH          ((CONFIG_LIGHT_RING_LED_COUNT + 1U) / 2U)
@@ -156,15 +156,6 @@ static custom_palette_t s_custom_palettes[CUSTOM_PALETTE_SLOT_COUNT];
 // WLED-inspired fixed palettes sampled with a 16-entry blended lookup.
 static const builtin_palette_t s_builtin_palettes[BUILTIN_PALETTE_COUNT] = {
     {
-        .name = "Party",
-        .colors = {
-            {85, 0, 171}, {132, 0, 124}, {171, 0, 85}, {255, 0, 128},
-            {255, 0, 0}, {255, 96, 0}, {255, 192, 0}, {192, 255, 0},
-            {96, 255, 0}, {0, 255, 0}, {0, 255, 128}, {0, 255, 255},
-            {0, 128, 255}, {0, 0, 255}, {96, 0, 255}, {192, 0, 255},
-        },
-    },
-    {
         .name = "Cloud",
         .colors = {
             {16, 24, 48}, {32, 48, 80}, {48, 72, 112}, {72, 104, 144},
@@ -198,15 +189,6 @@ static const builtin_palette_t s_builtin_palettes[BUILTIN_PALETTE_COUNT] = {
             {24, 88, 20}, {32, 112, 24}, {48, 136, 24}, {64, 160, 24},
             {80, 176, 20}, {104, 192, 24}, {128, 208, 32}, {152, 192, 48},
             {112, 144, 32}, {80, 104, 24}, {48, 72, 16}, {24, 40, 8},
-        },
-    },
-    {
-        .name = "Sunset",
-        .colors = {
-            {20, 0, 32}, {48, 0, 64}, {80, 0, 96}, {112, 0, 128},
-            {144, 16, 128}, {176, 32, 112}, {208, 48, 96}, {224, 72, 80},
-            {240, 96, 64}, {255, 120, 48}, {255, 144, 40}, {255, 168, 56},
-            {255, 192, 88}, {255, 216, 128}, {255, 232, 176}, {255, 244, 224},
         },
     },
     {
@@ -283,6 +265,64 @@ static const custom_palette_t s_default_custom_palettes[CUSTOM_PALETTE_SLOT_COUN
             {255, 250, 255, 224},
         },
     },
+    {
+        .stop_count = 5,
+        .name = "Good Morning",
+        .stops = {
+            {0, 105, 109, 118},
+            {64, 173, 170, 166},
+            {128, 186, 158, 120},
+            {192, 196, 143, 77},
+            {255, 194, 107, 51},
+        },
+    },
+    {
+        .stop_count = 5,
+        .name = "Good Evening",
+        .stops = {
+            {0, 115, 128, 142},
+            {64, 140, 156, 182},
+            {128, 72, 80, 161},
+            {192, 62, 80, 170},
+            {255, 90, 64, 158},
+        },
+    },
+    {
+        .stop_count = 3,
+        .name = "Sensitive",
+        .stops = {
+            {0, 103, 147, 137},
+            {128, 164, 171, 143},
+            {255, 94, 115, 120},
+        },
+    },
+    {
+        .stop_count = 3,
+        .name = "Intense",
+        .stops = {
+            {0, 130, 58, 55},
+            {128, 120, 76, 60},
+            {255, 124, 48, 59},
+        },
+    },
+    {
+        .stop_count = 3,
+        .name = "Regular",
+        .stops = {
+            {0, 49, 68, 101},
+            {128, 72, 85, 105},
+            {255, 89, 110, 111},
+        },
+    },
+    {
+        .stop_count = 3,
+        .name = "Foam",
+        .stops = {
+            {0, 104, 121, 154},
+            {128, 102, 90, 118},
+            {255, 71, 69, 92},
+        },
+    },
 };
 
 static light_state_t s_light_state = {
@@ -296,26 +336,26 @@ static light_state_t s_light_state = {
     .speed = 128,
     .palette = 0,
     .swoosh_background_palette = 0,
-    .swoosh_left_palette = 7,
-    .swoosh_right_palette = 8,
+    .swoosh_left_palette = 5,
+    .swoosh_right_palette = 6,
     .swoosh_left_stops = 5,
     .swoosh_right_stops = 5,
     .shrink_background_palette = 0,
-    .shrink_bar_palette = 7,
+    .shrink_bar_palette = 5,
     .shrink_length = 4,
     .shrink_gap = 6,
     .rotation_background_palette = 0,
-    .rotation_palette = 7,
+    .rotation_palette = 5,
     .rotation_length = 2,
     .rotation_gap = 6,
     .rotation_counterclockwise = false,
-    .point_palette = 7,
+    .point_palette = 5,
     .point_background_palette = 0,
     .point_length = 3,
     .point_total_length = 14,
     .point_repeat = 1,
     .point_gap = 8,
-    .edge_palette = 7,
+    .edge_palette = 5,
     .edge_length = 2,
     .edge_repeat = 1,
     .edge_gap = 8,
