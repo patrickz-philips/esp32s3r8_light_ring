@@ -204,8 +204,13 @@ static esp_err_t json_backup_get_handler(httpd_req_t *req)
     }
 
     cJSON_AddNumberToObject(root, "version", 1);
-    cJSON_AddItemToObject(root, "palettes", export_custom_palettes_json());
-    cJSON_AddItemToObject(root, "scenarios", export_scenarios_json());
+    cJSON *palettes = export_custom_palettes_json();
+    cJSON *scenarios = export_scenarios_json();
+    cJSON_AddItemToObject(root, "palettes", palettes);
+    cJSON_AddItemToObject(root, "scenarios", scenarios);
+
+    ESP_LOGI(TAG, "backup export: palettes=%d scenarios=%d",
+             cJSON_GetArraySize(palettes), cJSON_GetArraySize(scenarios));
 
     esp_err_t ret = send_json_response(req, root);
     cJSON_Delete(root);
@@ -244,14 +249,47 @@ static esp_err_t json_backup_post_handler(httpd_req_t *req)
 
     cJSON *palettes = cJSON_GetObjectItemCaseSensitive(root, "palettes");
     cJSON *scenarios = cJSON_GetObjectItemCaseSensitive(root, "scenarios");
+    cJSON *palette_items = cJSON_GetObjectItemCaseSensitive(palettes, "items");
+    cJSON *scenario_items = cJSON_GetObjectItemCaseSensitive(scenarios, "items");
+
+    cJSON *palette_array = NULL;
+    cJSON *scenario_array = NULL;
+    if (cJSON_IsArray(palettes)) {
+        palette_array = palettes;
+    } else if (cJSON_IsArray(palette_items)) {
+        palette_array = palette_items;
+    }
+    if (cJSON_IsArray(scenarios)) {
+        scenario_array = scenarios;
+    } else if (cJSON_IsArray(scenario_items)) {
+        scenario_array = scenario_items;
+    }
+
+    if (palettes != NULL && palette_array == NULL) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Invalid palettes format");
+    }
+    if (scenarios != NULL && scenario_array == NULL) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Invalid scenarios format");
+    }
+
+    int imported_palette_count = cJSON_GetArraySize(palette_array);
+    int imported_scenario_count = cJSON_GetArraySize(scenario_array);
+
+    ESP_LOGI(TAG, "backup import: body=%d palettes=%d scenarios=%d",
+             (int) req->content_len,
+             imported_palette_count, imported_scenario_count);
 
     esp_err_t palette_ret = ESP_OK;
     esp_err_t scenario_ret = ESP_OK;
-    if (cJSON_IsArray(palettes)) {
-        palette_ret = import_custom_palettes_json(palettes);
+    if (palette_array != NULL) {
+        palette_ret = import_custom_palettes_json(palette_array);
     }
-    if (cJSON_IsArray(scenarios)) {
-        scenario_ret = import_scenarios_json(scenarios);
+    if (scenario_array != NULL) {
+        scenario_ret = import_scenarios_json(scenario_array);
     }
     cJSON_Delete(root);
 
@@ -261,6 +299,8 @@ static esp_err_t json_backup_post_handler(httpd_req_t *req)
 
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", true);
+    cJSON_AddNumberToObject(response, "palettes", imported_palette_count);
+    cJSON_AddNumberToObject(response, "scenarios", imported_scenario_count);
     esp_err_t ret = send_json_response(req, response);
     cJSON_Delete(response);
     return ret;

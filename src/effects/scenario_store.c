@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -260,8 +261,12 @@ esp_err_t import_scenarios_json(const cJSON *array)
         return ESP_ERR_INVALID_ARG;
     }
 
-    scenario_t imported[SCENARIO_MAX_COUNT];
-    memset(imported, 0, sizeof(imported));
+    /* scenario_t is ~800 bytes; an array of SCENARIO_MAX_COUNT on the stack
+       overflows the httpd task stack, so allocate it on the heap instead. */
+    scenario_t *imported = calloc(SCENARIO_MAX_COUNT, sizeof(scenario_t));
+    if (imported == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     uint8_t imported_count = 0U;
 
     const cJSON *entry = NULL;
@@ -270,20 +275,25 @@ esp_err_t import_scenarios_json(const cJSON *array)
             break;
         }
         if (!cJSON_IsObject(entry)) {
+            ESP_LOGW(TAG, "import: entry not object, skipped");
             continue;
         }
 
         cJSON *name = cJSON_GetObjectItemCaseSensitive(entry, "name");
         cJSON *state = cJSON_GetObjectItemCaseSensitive(entry, "state");
         if (!cJSON_IsObject(state)) {
+            ESP_LOGW(TAG, "import: state not object (type=%d), skipped",
+                     state ? state->type : -1);
             continue;
         }
 
         char *payload = cJSON_PrintUnformatted(state);
         if (payload == NULL) {
+            ESP_LOGW(TAG, "import: payload print failed, skipped");
             continue;
         }
         if (strlen(payload) >= SCENARIO_PAYLOAD_LENGTH) {
+            ESP_LOGW(TAG, "import: payload too large (%u), skipped", (unsigned) strlen(payload));
             cJSON_free(payload);
             continue;
         }
@@ -305,6 +315,11 @@ esp_err_t import_scenarios_json(const cJSON *array)
     s_scenario_count = imported_count;
     xSemaphoreGive(s_state_lock);
 
-    return save_scenarios_to_nvs();
+    free(imported);
+
+    esp_err_t save_ret = save_scenarios_to_nvs();
+    ESP_LOGI(TAG, "import scenarios: accepted=%u save_ret=%s",
+             (unsigned) imported_count, esp_err_to_name(save_ret));
+    return save_ret;
 }
 
