@@ -38,6 +38,8 @@ static light_state_t s_light_state = {
     .swoosh_right_palette = 6,
     .swoosh_left_stops = 5,
     .swoosh_right_stops = 5,
+    .swoosh_reverse_cover = false,
+    .swoosh_reverse_gap = 6,
     .shrink_background_palette = 0,
     .shrink_bar_palette = 5,
     .shrink_length = 4,
@@ -60,6 +62,10 @@ static light_state_t s_light_state = {
     .chase_background_palette = 0,
     .chase_palette = 5,
     .chase_length = 5,
+    .chase_transition_palette = 6,
+    .chase_transition_speed = 128,
+    .chase_transition_running = false,
+    .chase_transition_progress = 0,
 };
 
 
@@ -74,6 +80,8 @@ static const char *effect_name(effect_id_t effect)
         return "rainbow";
     case EFFECT_CHASE:
         return "chase";
+    case EFFECT_CHASE_TRANSITION:
+        return "chase_transition";
     case EFFECT_COLOR_WIPE:
         return "color_wipe";
     case EFFECT_TWINKLE:
@@ -138,6 +146,10 @@ static effect_id_t parse_effect_name(const char *value)
     if (strcasecmp(value, "chase") == 0) {
         return EFFECT_CHASE;
     }
+    if (strcasecmp(value, "chase_transition") == 0 || strcasecmp(value, "chase transition") == 0 ||
+        strcasecmp(value, "transition") == 0) {
+        return EFFECT_CHASE_TRANSITION;
+    }
     if (strcasecmp(value, "color_wipe") == 0 || strcasecmp(value, "color wipe") == 0 ||
         strcasecmp(value, "wipe") == 0) {
         return EFFECT_COLOR_WIPE;
@@ -197,6 +209,17 @@ static uint8_t clamp_shrink_length(int value)
     }
     if (value > (int) SHRINK_BAR_LENGTH) {
         return (uint8_t) SHRINK_BAR_LENGTH;
+    }
+    return (uint8_t) value;
+}
+
+static uint8_t clamp_swoosh_gap(int value)
+{
+    if (value < 0) {
+        return 0U;
+    }
+    if (value > 60) {
+        return 60U;
     }
     return (uint8_t) value;
 }
@@ -529,6 +552,7 @@ static uint32_t effect_delay_ms(const light_state_t *state)
     case EFFECT_RAINBOW:
         return speed_to_delay(state->speed, 12U, 34U);
     case EFFECT_CHASE:
+    case EFFECT_CHASE_TRANSITION:
         return speed_to_delay(state->speed, 18U, 50U);
     case EFFECT_COLOR_WIPE:
         return speed_to_delay(state->speed, 24U, 82U);
@@ -774,24 +798,70 @@ static void render_swoosh_reverse(const light_state_t *state, uint32_t frame)
 
     uint8_t left_span = clamp_swoosh_span(state->swoosh_left_stops);
     uint8_t right_span = clamp_swoosh_span(state->swoosh_right_stops);
-    uint8_t head = (uint8_t) ((frame * (1U + ((uint32_t) state->speed / 96U))) % SWOOSH_PATH_LENGTH);
+    uint8_t max_span = (left_span > right_span) ? left_span : right_span;
+    uint32_t active_frames = (uint32_t) SWOOSH_PATH_LENGTH;
+    if (!state->swoosh_reverse_cover && max_span > 0U) {
+        /* Non-cover round: include tail run-out until both sides fully fade
+           back to background. */
+        active_frames += (uint32_t) (max_span - 1U);
+    }
+
+    uint32_t gap = clamp_swoosh_gap(state->swoosh_reverse_gap);
+    uint32_t period = active_frames + gap;
+    uint32_t phase = (period > 0U) ? (frame % period) : 0U;
     light_state_t left_state;
     light_state_t right_state;
 
     load_swoosh_palette_context(&left_state, state, state->swoosh_left_palette);
     load_swoosh_palette_context(&right_state, state, state->swoosh_right_palette);
 
+    if (state->swoosh_reverse_cover) {
+        if (phase >= active_frames) {
+            /* During cover-mode gap, hold the fully covered frame. */
+            for (uint8_t pos = 0; pos < SWOOSH_PATH_LENGTH; ++pos) {
+                uint8_t palette_index = palette_compress_index(pos, SWOOSH_PATH_LENGTH);
+                set_state_palette_level(swoosh_left_ring_index(pos), &left_state, palette_index, 255U);
+                set_state_palette_level(swoosh_right_ring_index(pos), &right_state, palette_index, 255U);
+            }
+            return;
+        }
+
+        uint8_t head = (uint8_t) phase;
+        uint8_t mirrored_head = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - head);
+        uint8_t cover_len = (uint8_t) (SWOOSH_PATH_LENGTH - mirrored_head);
+        for (uint8_t pos = mirrored_head; pos < SWOOSH_PATH_LENGTH; ++pos) {
+            uint8_t rel = (uint8_t) (pos - mirrored_head);
+            uint8_t palette_index = palette_compress_index(rel, cover_len);
+            set_state_palette_level(swoosh_left_ring_index(pos), &left_state, palette_index, 255U);
+            set_state_palette_level(swoosh_right_ring_index(pos), &right_state, palette_index, 255U);
+        }
+        return;
+    }
+
+    if (phase >= active_frames) {
+        return; /* non-cover gap -> background only */
+    }
+
+    /* Non-cover round: start from the center, chase toward both ends, then
+       keep running until tails fully disappear so the ring returns to pure
+       background before gap starts. */
     for (uint8_t tail = 0; tail < left_span; ++tail) {
-        uint8_t position = (uint8_t) ((head + SWOOSH_PATH_LENGTH - tail) % SWOOSH_PATH_LENGTH);
-        uint8_t mirrored_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - position);
+        int32_t raw_pos = (int32_t) phase - (int32_t) tail;
+        if (raw_pos < 0 || raw_pos >= (int32_t) SWOOSH_PATH_LENGTH) {
+            continue;
+        }
+        uint8_t mirrored_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - (uint8_t) raw_pos);
         uint8_t led = swoosh_left_ring_index(mirrored_position);
         uint8_t level = (uint8_t) (255U - ((uint16_t) tail * 196U) / left_span);
         set_state_palette_level(led, &left_state, palette_compress_index((uint8_t) (left_span - 1U - tail), left_span), level);
     }
 
     for (uint8_t tail = 0; tail < right_span; ++tail) {
-        uint8_t position = (uint8_t) ((head + SWOOSH_PATH_LENGTH - tail) % SWOOSH_PATH_LENGTH);
-        uint8_t mirrored_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - position);
+        int32_t raw_pos = (int32_t) phase - (int32_t) tail;
+        if (raw_pos < 0 || raw_pos >= (int32_t) SWOOSH_PATH_LENGTH) {
+            continue;
+        }
+        uint8_t mirrored_position = (uint8_t) (SWOOSH_PATH_LENGTH - 1U - (uint8_t) raw_pos);
         uint8_t led = swoosh_right_ring_index(mirrored_position);
         uint8_t level = (uint8_t) (255U - ((uint16_t) tail * 196U) / right_span);
         set_state_palette_level(led, &right_state, palette_compress_index((uint8_t) (right_span - 1U - tail), right_span), level);
@@ -949,6 +1019,53 @@ static void render_chase(const light_state_t *state, uint32_t frame)
     }
 }
 
+static void render_chase_transition(const light_state_t *state, uint32_t frame)
+{
+    light_state_t background;
+    light_state_t from_chase;
+    light_state_t to_chase;
+    load_swoosh_palette_context(&background, state, state->chase_background_palette);
+    load_swoosh_palette_context(&from_chase, state, state->chase_palette);
+    load_swoosh_palette_context(&to_chase, state, state->chase_transition_palette);
+
+    const uint16_t led_count = CONFIG_LIGHT_RING_LED_COUNT;
+    uint8_t chase_len = clamp_chase_length(state->chase_length);
+    if (chase_len > (uint8_t) led_count) {
+        chase_len = (uint8_t) led_count;
+    }
+
+    for (uint16_t index = 0; index < led_count; ++index) {
+        set_state_pixel_level(index, &background, 255U);
+    }
+
+    uint16_t head = (uint16_t) ((frame * (1U + ((uint32_t) state->speed / 40U))) % led_count);
+    uint8_t progress = state->chase_transition_progress;
+    for (uint8_t pos = 0; pos < chase_len; ++pos) {
+        uint16_t led = (uint16_t) ((head + led_count - pos) % led_count);
+        uint8_t palette_index = palette_compress_index(pos, chase_len);
+
+        uint8_t from_r;
+        uint8_t from_g;
+        uint8_t from_b;
+        uint8_t to_r;
+        uint8_t to_g;
+        uint8_t to_b;
+        resolve_state_rgb(&from_chase, palette_index, state->brightness, &from_r, &from_g, &from_b);
+        resolve_state_rgb(&to_chase, palette_index, state->brightness, &to_r, &to_g, &to_b);
+
+        uint8_t out_r = (uint8_t) ((((uint16_t) from_r * (uint16_t) (255U - progress)) +
+                                     ((uint16_t) to_r * (uint16_t) progress)) /
+                                    255U);
+        uint8_t out_g = (uint8_t) ((((uint16_t) from_g * (uint16_t) (255U - progress)) +
+                                     ((uint16_t) to_g * (uint16_t) progress)) /
+                                    255U);
+        uint8_t out_b = (uint8_t) ((((uint16_t) from_b * (uint16_t) (255U - progress)) +
+                                     ((uint16_t) to_b * (uint16_t) progress)) /
+                                    255U);
+        set_pixel_rgb(led, out_r, out_g, out_b);
+    }
+}
+
 /* Maps a position along one of the two abstract arms onto a physical LED.
    The single 1..N strip is split into two arms that share the apex (LED
    POINT_APEX). pos 0 == apex; pos grows toward the arm's tail.
@@ -1099,6 +1216,9 @@ static void render_frame(const light_state_t *state, uint32_t frame)
     case EFFECT_CHASE:
         render_chase(state, frame);
         break;
+    case EFFECT_CHASE_TRANSITION:
+        render_chase_transition(state, frame);
+        break;
     case EFFECT_COLOR_WIPE:
         render_color_wipe(state, frame);
         break;
@@ -1149,6 +1269,25 @@ static void light_render_task(void *arg)
                 ESP_LOGW(TAG, "Failed to flush frame to LED ring");
             }
         }
+
+        if (state.effect == EFFECT_CHASE_TRANSITION && state.chase_transition_running) {
+            uint8_t step = (uint8_t) (1U + (state.chase_transition_speed / 32U));
+            uint16_t next = (uint16_t) state.chase_transition_progress + step;
+
+            xSemaphoreTake(s_state_lock, portMAX_DELAY);
+            if (s_light_state.effect == EFFECT_CHASE_TRANSITION && s_light_state.chase_transition_running) {
+                if (next >= 255U) {
+                    s_light_state.chase_palette = s_light_state.chase_transition_palette;
+                    s_light_state.chase_transition_progress = 0U;
+                    s_light_state.chase_transition_running = false;
+                    s_light_state.effect = EFFECT_CHASE;
+                } else {
+                    s_light_state.chase_transition_progress = (uint8_t) next;
+                }
+            }
+            xSemaphoreGive(s_state_lock);
+        }
+
         vTaskDelay(pdMS_TO_TICKS(effect_delay_ms(&state)));
     }
 }
@@ -1182,6 +1321,8 @@ static void apply_segment_json(cJSON *segment, light_state_t *state)
     cJSON *right_pal = cJSON_GetObjectItemCaseSensitive(segment, "rightPal");
     cJSON *left_stops = cJSON_GetObjectItemCaseSensitive(segment, "leftStops");
     cJSON *right_stops = cJSON_GetObjectItemCaseSensitive(segment, "rightStops");
+    cJSON *swoosh_cover = cJSON_GetObjectItemCaseSensitive(segment, "swooshCover");
+    cJSON *swoosh_gap = cJSON_GetObjectItemCaseSensitive(segment, "swooshGap");
     cJSON *shrink_bg = cJSON_GetObjectItemCaseSensitive(segment, "shrinkBg");
     cJSON *shrink_bar = cJSON_GetObjectItemCaseSensitive(segment, "shrinkBar");
     cJSON *shrink_len = cJSON_GetObjectItemCaseSensitive(segment, "shrinkLen");
@@ -1204,6 +1345,9 @@ static void apply_segment_json(cJSON *segment, light_state_t *state)
     cJSON *chase_bg = cJSON_GetObjectItemCaseSensitive(segment, "chaseBg");
     cJSON *chase_pal = cJSON_GetObjectItemCaseSensitive(segment, "chasePal");
     cJSON *chase_len = cJSON_GetObjectItemCaseSensitive(segment, "chaseLen");
+    cJSON *transition_pal = cJSON_GetObjectItemCaseSensitive(segment, "transitionPal");
+    cJSON *transition_speed = cJSON_GetObjectItemCaseSensitive(segment, "transitionSpeed");
+    cJSON *start_transition = cJSON_GetObjectItemCaseSensitive(segment, "startTransition");
     cJSON *on = cJSON_GetObjectItemCaseSensitive(segment, "on");
     cJSON *colors = cJSON_GetObjectItemCaseSensitive(segment, "col");
 
@@ -1230,6 +1374,12 @@ static void apply_segment_json(cJSON *segment, light_state_t *state)
     }
     if (cJSON_IsNumber(right_stops)) {
         state->swoosh_right_stops = clamp_swoosh_span(right_stops->valueint);
+    }
+    if (cJSON_IsBool(swoosh_cover)) {
+        state->swoosh_reverse_cover = cJSON_IsTrue(swoosh_cover);
+    }
+    if (cJSON_IsNumber(swoosh_gap)) {
+        state->swoosh_reverse_gap = clamp_swoosh_gap(swoosh_gap->valueint);
     }
     if (cJSON_IsNumber(shrink_bg)) {
         state->shrink_background_palette = clamp_palette(shrink_bg->valueint);
@@ -1297,6 +1447,18 @@ static void apply_segment_json(cJSON *segment, light_state_t *state)
     if (cJSON_IsNumber(chase_len)) {
         state->chase_length = clamp_chase_length(chase_len->valueint);
     }
+    if (cJSON_IsNumber(transition_pal)) {
+        state->chase_transition_palette = clamp_palette(transition_pal->valueint);
+    }
+    if (cJSON_IsNumber(transition_speed)) {
+        state->chase_transition_speed = clamp_u8(transition_speed->valueint);
+    }
+    if (cJSON_IsBool(start_transition) && cJSON_IsTrue(start_transition) &&
+        (state->effect == EFFECT_CHASE || state->effect == EFFECT_CHASE_TRANSITION)) {
+        state->effect = EFFECT_CHASE_TRANSITION;
+        state->chase_transition_running = true;
+        state->chase_transition_progress = 0U;
+    }
     if (cJSON_IsBool(on)) {
         state->on = cJSON_IsTrue(on);
     }
@@ -1321,6 +1483,8 @@ void apply_json_state(cJSON *root, light_state_t *state)
     cJSON *right_pal = cJSON_GetObjectItemCaseSensitive(root, "rightPal");
     cJSON *left_stops = cJSON_GetObjectItemCaseSensitive(root, "leftStops");
     cJSON *right_stops = cJSON_GetObjectItemCaseSensitive(root, "rightStops");
+    cJSON *swoosh_cover = cJSON_GetObjectItemCaseSensitive(root, "swooshCover");
+    cJSON *swoosh_gap = cJSON_GetObjectItemCaseSensitive(root, "swooshGap");
     cJSON *shrink_bg = cJSON_GetObjectItemCaseSensitive(root, "shrinkBg");
     cJSON *shrink_bar = cJSON_GetObjectItemCaseSensitive(root, "shrinkBar");
     cJSON *shrink_len = cJSON_GetObjectItemCaseSensitive(root, "shrinkLen");
@@ -1343,6 +1507,9 @@ void apply_json_state(cJSON *root, light_state_t *state)
     cJSON *chase_bg = cJSON_GetObjectItemCaseSensitive(root, "chaseBg");
     cJSON *chase_pal = cJSON_GetObjectItemCaseSensitive(root, "chasePal");
     cJSON *chase_len = cJSON_GetObjectItemCaseSensitive(root, "chaseLen");
+    cJSON *transition_pal = cJSON_GetObjectItemCaseSensitive(root, "transitionPal");
+    cJSON *transition_speed = cJSON_GetObjectItemCaseSensitive(root, "transitionSpeed");
+    cJSON *start_transition = cJSON_GetObjectItemCaseSensitive(root, "startTransition");
     cJSON *color = cJSON_GetObjectItemCaseSensitive(root, "color");
     cJSON *segments = cJSON_GetObjectItemCaseSensitive(root, "seg");
 
@@ -1390,6 +1557,12 @@ void apply_json_state(cJSON *root, light_state_t *state)
     if (cJSON_IsNumber(right_stops)) {
         state->swoosh_right_stops = clamp_swoosh_span(right_stops->valueint);
     }
+    if (cJSON_IsBool(swoosh_cover)) {
+        state->swoosh_reverse_cover = cJSON_IsTrue(swoosh_cover);
+    }
+    if (cJSON_IsNumber(swoosh_gap)) {
+        state->swoosh_reverse_gap = clamp_swoosh_gap(swoosh_gap->valueint);
+    }
     if (cJSON_IsNumber(shrink_bg)) {
         state->shrink_background_palette = clamp_palette(shrink_bg->valueint);
     }
@@ -1456,6 +1629,18 @@ void apply_json_state(cJSON *root, light_state_t *state)
     if (cJSON_IsNumber(chase_len)) {
         state->chase_length = clamp_chase_length(chase_len->valueint);
     }
+    if (cJSON_IsNumber(transition_pal)) {
+        state->chase_transition_palette = clamp_palette(transition_pal->valueint);
+    }
+    if (cJSON_IsNumber(transition_speed)) {
+        state->chase_transition_speed = clamp_u8(transition_speed->valueint);
+    }
+    if (cJSON_IsBool(start_transition) && cJSON_IsTrue(start_transition) &&
+        (state->effect == EFFECT_CHASE || state->effect == EFFECT_CHASE_TRANSITION)) {
+        state->effect = EFFECT_CHASE_TRANSITION;
+        state->chase_transition_running = true;
+        state->chase_transition_progress = 0U;
+    }
     apply_color_array(color, state);
 
     if (cJSON_IsArray(segments) && cJSON_GetArraySize(segments) > 0) {
@@ -1487,6 +1672,8 @@ cJSON *build_state_json(void)
     cJSON_AddNumberToObject(root, "rightPal", state.swoosh_right_palette);
     cJSON_AddNumberToObject(root, "leftStops", state.swoosh_left_stops);
     cJSON_AddNumberToObject(root, "rightStops", state.swoosh_right_stops);
+    cJSON_AddBoolToObject(root, "swooshCover", state.swoosh_reverse_cover);
+    cJSON_AddNumberToObject(root, "swooshGap", state.swoosh_reverse_gap);
     cJSON_AddNumberToObject(root, "shrinkBg", state.shrink_background_palette);
     cJSON_AddNumberToObject(root, "shrinkBar", state.shrink_bar_palette);
     cJSON_AddNumberToObject(root, "shrinkLen", state.shrink_length);
@@ -1509,6 +1696,8 @@ cJSON *build_state_json(void)
     cJSON_AddNumberToObject(root, "chaseBg", state.chase_background_palette);
     cJSON_AddNumberToObject(root, "chasePal", state.chase_palette);
     cJSON_AddNumberToObject(root, "chaseLen", state.chase_length);
+    cJSON_AddNumberToObject(root, "transitionPal", state.chase_transition_palette);
+    cJSON_AddNumberToObject(root, "transitionSpeed", state.chase_transition_speed);
     cJSON_AddStringToObject(root, "effectName", effect_name((effect_id_t) state.effect));
     cJSON_AddStringToObject(root, "paletteName", state.palette_label[0] != '\0' ? state.palette_label : palette_name(state.palette));
 
@@ -1527,6 +1716,8 @@ cJSON *build_state_json(void)
     cJSON_AddNumberToObject(segment, "rightPal", state.swoosh_right_palette);
     cJSON_AddNumberToObject(segment, "leftStops", state.swoosh_left_stops);
     cJSON_AddNumberToObject(segment, "rightStops", state.swoosh_right_stops);
+    cJSON_AddBoolToObject(segment, "swooshCover", state.swoosh_reverse_cover);
+    cJSON_AddNumberToObject(segment, "swooshGap", state.swoosh_reverse_gap);
     cJSON_AddNumberToObject(segment, "shrinkBg", state.shrink_background_palette);
     cJSON_AddNumberToObject(segment, "shrinkBar", state.shrink_bar_palette);
     cJSON_AddNumberToObject(segment, "shrinkLen", state.shrink_length);
@@ -1549,6 +1740,8 @@ cJSON *build_state_json(void)
     cJSON_AddNumberToObject(segment, "chaseBg", state.chase_background_palette);
     cJSON_AddNumberToObject(segment, "chasePal", state.chase_palette);
     cJSON_AddNumberToObject(segment, "chaseLen", state.chase_length);
+    cJSON_AddNumberToObject(segment, "transitionPal", state.chase_transition_palette);
+    cJSON_AddNumberToObject(segment, "transitionSpeed", state.chase_transition_speed);
 
     cJSON_AddItemToArray(primary_color, cJSON_CreateNumber(state.red));
     cJSON_AddItemToArray(primary_color, cJSON_CreateNumber(state.green));

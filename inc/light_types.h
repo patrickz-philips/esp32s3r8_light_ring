@@ -8,19 +8,20 @@
 /* Effect identifiers (order must match the UI <select> option values). */
 typedef enum {
     EFFECT_SOLID = 0,
-    EFFECT_BREATHE,
-    EFFECT_RAINBOW,
-    EFFECT_CHASE,
-    EFFECT_COLOR_WIPE,
-    EFFECT_TWINKLE,
-    EFFECT_SCANNER,
-    EFFECT_SPARKLE,
-    EFFECT_SWOOSH,
-    EFFECT_SWOOSH_REVERSE,
-    EFFECT_SHRINK,
-    EFFECT_ROTATION,
-    EFFECT_POINT,
-    EFFECT_BREATHE_EDGE,
+    EFFECT_BREATHE = 1,
+    EFFECT_RAINBOW = 2,
+    EFFECT_CHASE = 3,
+    EFFECT_COLOR_WIPE = 4,
+    EFFECT_TWINKLE = 5,
+    EFFECT_SCANNER = 6,
+    EFFECT_SPARKLE = 7,
+    EFFECT_SWOOSH = 8,
+    EFFECT_SWOOSH_REVERSE = 9,
+    EFFECT_SHRINK = 10,
+    EFFECT_ROTATION = 11,
+    EFFECT_POINT = 12,
+    EFFECT_BREATHE_EDGE = 13,
+    EFFECT_CHASE_TRANSITION = 14,
     EFFECT_COUNT,
 } effect_id_t;
 
@@ -63,6 +64,8 @@ typedef struct {
     uint8_t swoosh_right_palette;
     uint8_t swoosh_left_stops;
     uint8_t swoosh_right_stops;
+    bool swoosh_reverse_cover;
+    uint8_t swoosh_reverse_gap;
     uint8_t shrink_background_palette;
     uint8_t shrink_bar_palette;
     uint8_t shrink_length;
@@ -85,6 +88,10 @@ typedef struct {
     uint8_t chase_background_palette;
     uint8_t chase_palette;
     uint8_t chase_length;
+    uint8_t chase_transition_palette;
+    uint8_t chase_transition_speed;
+    bool chase_transition_running;
+    uint8_t chase_transition_progress;
     bool has_palette_cache;
     uint8_t palette_stop_count;
     bool palette_circular;
